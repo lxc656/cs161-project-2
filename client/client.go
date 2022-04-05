@@ -100,7 +100,18 @@ func someUsefulThings() {
 // A Go struct is like a Python or Java class - it can have attributes
 // (e.g. like the Username attribute) and methods (e.g. like the StoreFile method below).
 type User struct {
-	Username string
+	Username    string
+	PKE_Private []byte //User's private key to be used in RSA Encryption, 16 bytes
+	DS_Private  []byte //User's private digital signature key to be used for verification, 16 bytes
+
+	//key: file uuid, value: [SE_Key_File, HMAC_Key_File]
+	files_owned map[uuid.UUID][2]string
+
+	//key: file uuid, value: list of invitation IDs for each file
+	invitation_list map[uuid.UUID][]string
+
+	//key: file uuid, value: list of invitation IDs for each file
+	shared_files map[uuid.UUID][]string
 
 	// You can add other attributes here if you want! But note that in order for attributes to
 	// be included when this struct is serialized to/from JSON, they must be capitalized.
@@ -108,6 +119,19 @@ type User struct {
 	// this struct's methods, but you DON'T want that value to be included in the serialized value
 	// of this struct that's stored in datastore, then you can use a "private" variable (e.g. one that
 	// begins with a lowercase letter).
+}
+
+//Struct used to represnet a file header, stored in DataStore along with users
+type FileHeader struct {
+	owner     string   //Owner of the file
+	filename  string   //filenamed
+	page_list []string //list of uuids that each point to pages of the file
+
+	SE_key_page   []byte //16 byte symmetric key
+	HMAC_key_page []byte
+}
+
+type Page struct {
 }
 
 // NOTE: The following methods have toy (insecure!) implementations.
