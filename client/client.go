@@ -1,6 +1,7 @@
 package client
 
 // CS 161 Project 2
+// Authors: Ethan Song (email: esong200@berkeley.edu, SID: 3036030256), Jake Kim (email: jake.kim114@berkeley.edu, SID: 3034926636)
 
 // You MUST NOT change these default imports. ANY additional imports
 // may break the autograder!
@@ -101,8 +102,8 @@ func someUsefulThings() {
 // (e.g. like the Username attribute) and methods (e.g. like the StoreFile method below).
 type User struct {
 	Username    string
-	PKE_Private []byte //User's private key to be used in RSA Encryption
-	DS_Private  []byte //User's private digital signature key to be used for verification, 16 bytes
+	PKE_Private userlib.PKEDecKey //User's private key to be used in RSA Encryption
+	DS_Private  userlib.DSSignKey //User's private digital signature key to be used for verification, 16 bytes
 
 	//key: file uuid, value: [SE_Key_File, HMAC_Key_File]
 	Files_owned map[uuid.UUID][2]string
@@ -163,12 +164,28 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	}
 	user_struct, ok := userlib.DatastoreGet(user_uuid)
 
-	if ok { //if user doesn't exist, create a new user struct
-		pke_private
+	if ok { // if user doesn't exist, create a new user struct
+
+		// Generate and store pke private and public keys
+		pke_public, pke_private, err_pke_keygen := userlib.PKEKeyGen()
+		_ = err_pke_keygen
+		userlib.KeystoreSet(string(userlib.Hash([]byte(username+"3"))), pke_public)
+
+		// Generate and store ds keys
+		ds_sign_key, ds_verify_key, err_ds_keygen := userlib.DSKeyGen()
+		_ = err_ds_keygen
 		new_user := User{
-			Username: username,
+			Username:    username,
+			PKE_Private: pke_private,
+			DS_Private:  ds_sign_key,
 		}
-	} else { //is the user does already exist
+
+		// Serialize new user
+		// Encrypy new user
+		// HMAC new user
+		// Add new user to datastore
+
+	} else { //if the user already exists
 
 	}
 
