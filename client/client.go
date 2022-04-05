@@ -131,7 +131,25 @@ type FileHeader struct {
 	HMAC_key_page []byte
 }
 
+//Page struct, a bunch of these are gathered together to form a full file
 type Page struct {
+	text []byte //text of a page, limited to 256 bytes
+}
+
+//Invitations struct, the location of an invitation struct is sent to another user to share files
+type Invitation struct {
+	file_uuid            uuid.UUID //location of the shared file
+	sender_username      string
+	recipient_username   string
+	SE_Key_Invitation    []byte    //symmetric key used to access the file's keys
+	HMAC_Key_Invitation  []byte    //hmac key used to access the file's keys
+	invitation_keys_uuid uuid.UUID //location of the actual file's keys
+}
+
+//Where the invitation struct points to
+type FileKey struct {
+	SE_Key_File   []byte
+	HMAC_Key_File []byte
 }
 
 // NOTE: The following methods have toy (insecure!) implementations.

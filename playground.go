@@ -1,3 +1,4 @@
+//File used to test golang implementations
 package main
 
 import (
