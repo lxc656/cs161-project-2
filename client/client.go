@@ -105,13 +105,13 @@ type User struct {
 	DS_Private  []byte //User's private digital signature key to be used for verification, 16 bytes
 
 	//key: file uuid, value: [SE_Key_File, HMAC_Key_File]
-	files_owned map[uuid.UUID][2]string
+	Files_owned map[uuid.UUID][2]string
 
 	//key: file uuid, value: list of invitation IDs for each file
-	invitation_list map[uuid.UUID][]string
+	Invitation_list map[uuid.UUID][]string
 
 	//key: file uuid, value: list of invitation IDs for each file
-	shared_files map[uuid.UUID][]string
+	Shared_files map[uuid.UUID][]string
 
 	// You can add other attributes here if you want! But note that in order for attributes to
 	// be included when this struct is serialized to/from JSON, they must be capitalized.
@@ -123,9 +123,9 @@ type User struct {
 
 //Struct used to represnet a file header, stored in DataStore along with users
 type FileHeader struct {
-	owner     string   //Owner of the file
-	filename  string   //filenamed
-	page_list []string //list of uuids that each point to pages of the file
+	Owner     string   //Owner of the file
+	Filename  string   //filenamed
+	Page_list []string //list of uuids that each point to pages of the file
 
 	SE_key_page   []byte //16 byte symmetric key
 	HMAC_key_page []byte
@@ -133,17 +133,17 @@ type FileHeader struct {
 
 //Page struct, a bunch of these are gathered together to form a full file
 type Page struct {
-	text []byte //text of a page, limited to 256 bytes
+	Text []byte //text of a page, limited to 256 bytes
 }
 
 //Invitations struct, the location of an invitation struct is sent to another user to share files
 type Invitation struct {
-	file_uuid            uuid.UUID //location of the shared file
-	sender_username      string
-	recipient_username   string
+	File_uuid            uuid.UUID //location of the shared file
+	Sender_username      string
+	Recipient_username   string
 	SE_Key_Invitation    []byte    //symmetric key used to access the file's keys
 	HMAC_Key_Invitation  []byte    //hmac key used to access the file's keys
-	invitation_keys_uuid uuid.UUID //location of the actual file's keys
+	Invitation_keys_uuid uuid.UUID //location of the actual file's keys
 }
 
 //Where the invitation struct points to
@@ -164,6 +164,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	user_struct, ok := userlib.DatastoreGet(user_uuid)
 
 	if ok { //if user doesn't exist, create a new user struct
+		pke_private
 		new_user := User{
 			Username: username,
 		}
