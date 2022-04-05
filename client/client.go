@@ -101,7 +101,7 @@ func someUsefulThings() {
 // (e.g. like the Username attribute) and methods (e.g. like the StoreFile method below).
 type User struct {
 	Username    string
-	PKE_Private []byte //User's private key to be used in RSA Encryption, 16 bytes
+	PKE_Private []byte //User's private key to be used in RSA Encryption
 	DS_Private  []byte //User's private digital signature key to be used for verification, 16 bytes
 
 	//key: file uuid, value: [SE_Key_File, HMAC_Key_File]
@@ -155,6 +155,22 @@ type FileKey struct {
 // NOTE: The following methods have toy (insecure!) implementations.
 
 func InitUser(username string, password string) (userdataptr *User, err error) {
+	//Check if user already exists
+	user_hash := userlib.Hash([]byte(username))[0:16]
+	user_uuid, err := uuid.FromBytes(user_hash)
+	if err != nil {
+		fmt.Println("Error")
+	}
+	user_struct, ok := userlib.DatastoreGet(user_uuid)
+
+	if ok { //if user doesn't exist, create a new user struct
+		new_user := User{
+			Username: username,
+		}
+	} else { //is the user does already exist
+
+	}
+
 	var userdata User
 	userdata.Username = username
 	return &userdata, nil

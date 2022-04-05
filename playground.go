@@ -30,4 +30,12 @@ func main() {
 	test_list = append(test_list, "item1")
 	fmt.Println(test_list)
 	fmt.Println("Hello", 123)
+
+	var test_bytes []byte
+	for i := 0; i < 64; i++ {
+		test_bytes = append(test_bytes, 'a')
+	}
+	var string_byte = []byte("HelloWorld")
+	fmt.Println(string_byte)
+
 }
