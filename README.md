@@ -1,6 +1,7 @@
-# Project 2 Starter Code
+# Project 2
+Authors: Ethan Song, Jake Kim (UC Berkeley)
 
-This repository contains the starter code for Project 2!
+An implentation of a secure file transfer system
 
 For comprehensive documentation, see the Project 2 Spec (https://proj2.cs161.org/getting-started-coding/).
 
