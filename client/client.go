@@ -156,42 +156,72 @@ type FileKey struct {
 // NOTE: The following methods have toy (insecure!) implementations.
 
 func InitUser(username string, password string) (userdataptr *User, err error) {
+	//Check if empty username
+	if len(username) == 0 {
+		return nil, fmt.Errorf("Empty username error")
+	}
+
 	//Check if user already exists
 	user_hash := userlib.Hash([]byte(username))[0:16]
-	user_uuid, err := uuid.FromBytes(user_hash)
-	if err != nil {
+	user_uuid, uuid_err := uuid.FromBytes(user_hash)
+	if uuid_err != nil {
 		fmt.Println("Error")
 	}
 	user_struct, ok := userlib.DatastoreGet(user_uuid)
+	_ = user_struct
 
-	if ok { // if user doesn't exist, create a new user struct
-
+	if !ok { // if user doesn't exist, create a new user struct
 		// Generate and store pke private and public keys
 		pke_public, pke_private, err_pke_keygen := userlib.PKEKeyGen()
-		_ = err_pke_keygen
-		userlib.KeystoreSet(string(userlib.Hash([]byte(username+"3"))), pke_public)
+		if err_pke_keygen != nil {
+			return nil, fmt.Errorf("Error generating PKE key: %v", err_pke_keygen)
+		}
+		userlib.KeystoreSet(string(userlib.Hash([]byte(username+"0"))), pke_public)
 
 		// Generate and store ds keys
 		ds_sign_key, ds_verify_key, err_ds_keygen := userlib.DSKeyGen()
-		_ = err_ds_keygen
+		if err_ds_keygen != nil {
+			return nil, fmt.Errorf("Error generating DS key: %v", err_ds_keygen)
+		}
+		userlib.KeystoreSet(string(userlib.Hash([]byte(username+"1"))), ds_verify_key)
+
 		new_user := User{
 			Username:    username,
 			PKE_Private: pke_private,
 			DS_Private:  ds_sign_key,
 		}
 
+		user_uuid, err_uuid := uuid.FromBytes(userlib.Hash([]byte(new_user.Username)))
+		if err_uuid != nil {
+			return nil, fmt.Errorf("Error generating user UUID: %v", err_uuid)
+		}
+
 		// Serialize new user
+		marshalled_user, err_marshal := json.Marshal(new_user)
+		if err_marshal != nil {
+			return nil, fmt.Errorf("Error serializing: %v", err_marshal)
+		}
+
 		// Encrypy new user
+		SE_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(new_user.Username+"0")), 16)
+		HMAC_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(new_user.Username+"1")), 16)
+		encrypted_user := userlib.SymEnc(SE_Key_User, userlib.RandomBytes(16), marshalled_user)
+
 		// HMAC new user
+		HMACed_user, hmac_error := userlib.HMACEval(HMAC_Key_User, encrypted_user)
+		_ = hmac_error
+
 		// Add new user to datastore
+		userlib.DatastoreSet(user_uuid, HMACed_user)
+
+		test_user, exists := userlib.DatastoreGet(user_uuid)
+		_ = exists
+		fmt.Println("Test user", test_user)
+		return &new_user, nil
 
 	} else { //if the user already exists
-
+		return nil, fmt.Errorf("User already exists!")
 	}
-
-	var userdata User
-	userdata.Username = username
-	return &userdata, nil
 }
 
 func GetUser(username string, password string) (userdataptr *User, err error) {
