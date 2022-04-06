@@ -170,58 +170,58 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	user_struct, ok := userlib.DatastoreGet(user_uuid)
 	_ = user_struct
 
-	if !ok { // if user doesn't exist, create a new user struct
-		// Generate and store pke private and public keys
-		pke_public, pke_private, err_pke_keygen := userlib.PKEKeyGen()
-		if err_pke_keygen != nil {
-			return nil, fmt.Errorf("Error generating PKE key: %v", err_pke_keygen)
-		}
-		userlib.KeystoreSet(string(userlib.Hash([]byte(username+"0"))), pke_public)
-
-		// Generate and store ds keys
-		ds_sign_key, ds_verify_key, err_ds_keygen := userlib.DSKeyGen()
-		if err_ds_keygen != nil {
-			return nil, fmt.Errorf("Error generating DS key: %v", err_ds_keygen)
-		}
-		userlib.KeystoreSet(string(userlib.Hash([]byte(username+"1"))), ds_verify_key)
-
-		new_user := User{
-			Username:    username,
-			PKE_Private: pke_private,
-			DS_Private:  ds_sign_key,
-		}
-
-		user_uuid, err_uuid := uuid.FromBytes(userlib.Hash([]byte(new_user.Username)))
-		if err_uuid != nil {
-			return nil, fmt.Errorf("Error generating user UUID: %v", err_uuid)
-		}
-
-		// Serialize new user
-		marshalled_user, err_marshal := json.Marshal(new_user)
-		if err_marshal != nil {
-			return nil, fmt.Errorf("Error serializing: %v", err_marshal)
-		}
-
-		// Encrypy new user
-		SE_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(new_user.Username+"0")), 16)
-		HMAC_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(new_user.Username+"1")), 16)
-		encrypted_user := userlib.SymEnc(SE_Key_User, userlib.RandomBytes(16), marshalled_user)
-
-		// HMAC new user
-		HMACed_user, hmac_error := userlib.HMACEval(HMAC_Key_User, encrypted_user)
-		_ = hmac_error
-
-		// Add new user to datastore
-		userlib.DatastoreSet(user_uuid, HMACed_user)
-
-		test_user, exists := userlib.DatastoreGet(user_uuid)
-		_ = exists
-		fmt.Println("Test user", test_user)
-		return &new_user, nil
-
-	} else { //if the user already exists
+	if ok { //if the user already exists
 		return nil, fmt.Errorf("User already exists!")
 	}
+	// Generate and store pke private and public keys
+	pke_public, pke_private, err_pke_keygen := userlib.PKEKeyGen()
+	if err_pke_keygen != nil {
+		return nil, fmt.Errorf("Error generating PKE key: %v", err_pke_keygen)
+	}
+	userlib.KeystoreSet(string(userlib.Hash([]byte(username+"0"))), pke_public)
+
+	// Generate and store ds keys
+	ds_sign_key, ds_verify_key, err_ds_keygen := userlib.DSKeyGen()
+	if err_ds_keygen != nil {
+		return nil, fmt.Errorf("Error generating DS key: %v", err_ds_keygen)
+	}
+	userlib.KeystoreSet(string(userlib.Hash([]byte(username+"1"))), ds_verify_key)
+
+	new_user := User{
+		Username:    username,
+		PKE_Private: pke_private,
+		DS_Private:  ds_sign_key,
+	}
+
+	user_uuid, err_user_uuid := uuid.FromBytes(userlib.Hash([]byte(new_user.Username + "0")))
+	if err_user_uuid != nil {
+		return nil, fmt.Errorf("Error generating user UUID: %v", err_user_uuid)
+	}
+	user_hmac_uuid, err_user_hmac_uuid := uuid.FromBytes(userlib.Hash([]byte(new_user.Username + "1")))
+	if err_user_hmac_uuid != nil {
+		return nil, fmt.Errorf("Error generating user's hmac UUID: %v", user_hmac_uuid)
+	}
+
+	// Serialize new user
+	marshalled_user, err_marshal := json.Marshal(new_user)
+	if err_marshal != nil {
+		return nil, fmt.Errorf("Error serializing: %v", err_marshal)
+	}
+
+	// Encrypy new user
+	SE_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(new_user.Username+"0")), 16)
+	encrypted_user := userlib.SymEnc(SE_Key_User, userlib.RandomBytes(16), marshalled_user)
+
+	// compute HMAC tag for new user
+	HMAC_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(new_user.Username+"1")), 16)
+	HMAC_tag_user, hmac_error := userlib.HMACEval(HMAC_Key_User, encrypted_user)
+	_ = hmac_error
+
+	// Add new user and their hmac tag to datastore
+	userlib.DatastoreSet(user_uuid, encrypted_user)
+	userlib.DatastoreSet(user_hmac_uuid, HMAC_tag_user)
+
+	return &new_user, nil
 }
 
 func GetUser(username string, password string) (userdataptr *User, err error) {
