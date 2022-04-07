@@ -188,9 +188,12 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	userlib.KeystoreSet(string(userlib.Hash([]byte(username+"1"))), ds_verify_key)
 
 	new_user := User{
-		Username:    username,
-		PKE_Private: pke_private,
-		DS_Private:  ds_sign_key,
+		Username:        username,
+		PKE_Private:     pke_private,
+		DS_Private:      ds_sign_key,
+		Files_owned:     make(map[uuid.UUID][2]string),
+		Invitation_list: make(map[uuid.UUID][]string),
+		Shared_files:    make(map[uuid.UUID][]string),
 	}
 
 	user_uuid, err_user_uuid := uuid.FromBytes(userlib.Hash([]byte(new_user.Username + "0")))

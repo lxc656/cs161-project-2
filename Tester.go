@@ -148,9 +148,12 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		userlib.KeystoreSet(string(userlib.Hash([]byte(username+"1"))), ds_verify_key)
 
 		new_user := User{
-			Username:    username,
-			PKE_Private: pke_private,
-			DS_Private:  ds_sign_key,
+			Username:        username,
+			PKE_Private:     pke_private,
+			DS_Private:      ds_sign_key,
+			Files_owned:     make(map[uuid.UUID][2]string),
+			Invitation_list: make(map[uuid.UUID][]string),
+			Shared_files:    make(map[uuid.UUID][]string),
 		}
 
 		//Generate and store HMAC tag
@@ -257,13 +260,17 @@ func main() {
 		panic(get_user_err)
 	}
 	_ = retrieved_user_web
-	fmt.Println("Retrieved_User_Web:", retrieved_user_web)
-	fmt.Println("Error:", get_user_err)
 
-	retrieved_user_web.Files_owned[someUsefulThings().randomUUID] =
+	var test_arr [2]string
 
-		fmt.Println("Retrieved_User_Web:", retrieved_user_phone)
+	test_arr[0] = "Hello"
+	test_arr[1] = "World"
+
+	retrieved_user_web.Files_owned[uuid.New()] = test_arr
+	retrieved_user_web.Username = "changed_usr"
+
+	fmt.Println("Retrieved_User_Web Address:", &retrieved_user_web)
 	fmt.Println("Error:", get_user_err_2)
-
+	fmt.Println("user_phone address:", &retrieved_user_phone)
 	//Test File Storage
 }
