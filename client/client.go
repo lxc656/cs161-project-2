@@ -225,9 +225,44 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 }
 
 func GetUser(username string, password string) (userdataptr *User, err error) {
-	var userdata User
-	userdataptr = &userdata
-	return userdataptr, nil
+	//Check if user exists
+	user_hash := userlib.Hash([]byte(username))[0:16]
+	user_uuid, uuid_err := uuid.FromBytes(user_hash)
+	if uuid_err != nil {
+		fmt.Errorf("UUID Error:%v", uuid_err)
+	}
+	user_struct, ok := userlib.DatastoreGet(user_uuid)
+	if !ok { // If user is not found in datastore
+		return nil, fmt.Errorf("User doesn't exist in datastore:")
+	}
+	//Obtain keys determistically from provided username and password
+	SE_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(username+"0")), 16)
+	HMAC_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(username+"1")), 16)
+
+	//Verify HMAC
+	stored_hmac_uuid, uuid_hmac_err := uuid.FromBytes(userlib.Hash([]byte(username + "1"))[0:16])
+	if uuid_hmac_err != nil {
+		return nil, fmt.Errorf("Error generating hmac uuid: %v", uuid_hmac_err)
+	}
+	stored_hmac_tag, hmac_ok := userlib.DatastoreGet(stored_hmac_uuid)
+	_ = hmac_ok
+	computed_hmac_tag, computed_hmac_error := userlib.HMACEval(HMAC_Key_User, user_struct)
+	_ = computed_hmac_error
+
+	if !(userlib.HMACEqual(stored_hmac_tag, computed_hmac_tag)) {
+		return nil, fmt.Errorf("Warning: User struct has been tampered with!")
+	}
+
+	//Decrypt user
+	decrypted_user := userlib.SymDec(SE_Key_User, user_struct)
+
+	var unmarshaled_user User
+	if unmarshal_err := json.Unmarshal(decrypted_user, &unmarshaled_user); unmarshal_err != nil {
+		return nil, fmt.Errorf("Error unmarshaling user struct: %v", unmarshal_err)
+	}
+
+	//return decrypted user struct
+	return &unmarshaled_user, nil
 }
 
 func (userdata *User) StoreFile(filename string, content []byte) (err error) {

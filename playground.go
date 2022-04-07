@@ -71,24 +71,21 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 			DS_Private:  ds_sign_key,
 		}
 
-		user_uuid, err_user_uuid := uuid.FromBytes(userlib.Hash([]byte(new_user.Username + "0")))
-		if err_user_uuid != nil {
-			return nil, fmt.Errorf("Error generating user UUID: %v", err_user_uuid)
-		}
-		user_hmac_uuid, err_user_hmac_uuid := uuid.FromBytes(userlib.Hash([]byte(new_user.Username + "1")))
+		//Generate and store HMAC tag
+		user_hmac_uuid, err_user_hmac_uuid := uuid.FromBytes(userlib.Hash([]byte(new_user.Username + "1"))[0:16])
 		if err_user_hmac_uuid != nil {
 			return nil, fmt.Errorf("Error generating user's hmac UUID: %v", user_hmac_uuid)
 		}
 
 		// Serialize new user
-		marshalled_user, err_marshal := json.Marshal(new_user)
+		marshaled_user, err_marshal := json.Marshal(new_user)
 		if err_marshal != nil {
 			return nil, fmt.Errorf("Error serializing: %v", err_marshal)
 		}
 
 		// Encrypy new user
 		SE_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(new_user.Username+"0")), 16)
-		encrypted_user := userlib.SymEnc(SE_Key_User, userlib.RandomBytes(16), marshalled_user)
+		encrypted_user := userlib.SymEnc(SE_Key_User, userlib.RandomBytes(16), marshaled_user)
 
 		// HMAC new user
 		HMAC_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(new_user.Username+"1")), 16)
@@ -99,9 +96,6 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		userlib.DatastoreSet(user_uuid, encrypted_user)
 		userlib.DatastoreSet(user_hmac_uuid, HMAC_tag_user)
 
-		test_user, exists := userlib.DatastoreGet(user_uuid)
-		_ = exists
-		fmt.Println("Test user", test_user)
 		return &new_user, nil
 
 	} else { //if the user already exists
@@ -125,17 +119,29 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	HMAC_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(username+"1")), 16)
 
 	//Verify HMAC
-	stored_hmac_uuid, uuid_hmac_err := uuid.FromBytes(userlib.Hash([]byte(username + "1")))
-	_ = uuid_hmac_err
+	stored_hmac_uuid, uuid_hmac_err := uuid.FromBytes(userlib.Hash([]byte(username + "1"))[0:16])
+	if uuid_hmac_err != nil {
+		return nil, fmt.Errorf("Error generating hmac uuid: %v", uuid_hmac_err)
+	}
 	stored_hmac_tag, hmac_ok := userlib.DatastoreGet(stored_hmac_uuid)
+	_ = hmac_ok
 	computed_hmac_tag, computed_hmac_error := userlib.HMACEval(HMAC_Key_User, user_struct)
 	_ = computed_hmac_error
+
 	if !(userlib.HMACEqual(stored_hmac_tag, computed_hmac_tag)) {
 		return nil, fmt.Errorf("Warning: User struct has been tampered with!")
 	}
-	var userdata User
-	userdataptr = &userdata
-	return userdataptr, nil
+
+	//Decrypt user
+	decrypted_user := userlib.SymDec(SE_Key_User, user_struct)
+
+	var unmarshaled_user User
+	if unmarshal_err := json.Unmarshal(decrypted_user, &unmarshaled_user); unmarshal_err != nil {
+		return nil, fmt.Errorf("Error unmarshaling user struct: %v", unmarshal_err)
+	}
+
+	//return decrypted user struct
+	return &unmarshaled_user, nil
 }
 
 func main() {
@@ -145,8 +151,14 @@ func main() {
 	password := "cs161"
 
 	user, err := InitUser(username, password)
-	fmt.Println("User pointer:", user)
+	_ = user
+	//fmt.Println("User pointer:", user)
 	fmt.Println("Error:", err)
-	//Test GetUser
 
+	//Test GetUser
+	retrieved_user, get_user_err := GetUser(username, password)
+	_ = get_user_err
+	_ = retrieved_user
+	fmt.Println("Retrieved_User:", retrieved_user)
+	fmt.Println("Error:", get_user_err)
 }
