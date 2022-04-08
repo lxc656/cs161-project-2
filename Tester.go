@@ -87,10 +87,10 @@ type User struct {
 	DS_Private  userlib.DSSignKey //User's private digital signature key to be used for verification, 16 bytes
 
 	//key: file uuid, value: [SE_Key_File, HMAC_Key_File]
-	Files_owned map[uuid.UUID][2]string
+	Files_owned map[uuid.UUID][2][]byte
 
 	//key: file uuid, value: list of invitation IDs for each file
-	Invitation_list map[uuid.UUID][]string
+	Invitation_list map[uuid.UUID][]uuid.UUID
 
 	//key: filename, value: invitation ID recived for a particular file
 	Shared_files map[uuid.UUID]uuid.UUID
@@ -164,8 +164,8 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 			Username:        username,
 			PKE_Private:     pke_private,
 			DS_Private:      ds_sign_key,
-			Files_owned:     make(map[uuid.UUID][2]string),
-			Invitation_list: make(map[uuid.UUID][]string),
+			Files_owned:     make(map[uuid.UUID][2][]byte),
+			Invitation_list: make(map[uuid.UUID][]uuid.UUID),
 			Shared_files:    make(map[uuid.UUID]uuid.UUID),
 		}
 
@@ -249,23 +249,6 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 		fmt.Errorf(get_user_err.Error())
 	}
 
-	//From now on, use updated_user_data for file storage
-
-	//Generate uuid for file
-	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + updated_user_data.Username))[:16])
-	if file_uuid_err != nil {
-		return file_uuid_err
-	}
-
-	/*DEPRECIATED, DOESN'T MATTER IF FILE EXISTS ALREADY OR NOT
-	----------------------------------------------------
-	//Check if file with same name already exists
-	retrieved_file, ok := userlib.DatastoreGet(file_uuid)
-	if ok { // if the file already exists, overwrite
-
-	}
-	*/
-
 	//Generate random SE and HMAC keys that will be used for all file pages
 	se_key_page := userlib.RandomBytes(16)
 	hmac_key_page := userlib.RandomBytes(16)
@@ -324,8 +307,30 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	}
 
 	//Encrypt file
+	se_key_file := userlib.RandomBytes(16)
+	encrypted_file_header := userlib.SymEnc(se_key_file, userlib.RandomBytes(16), file_header_marshaled)
 
-	userlib.DatastoreSet(storageKey, content_marshaled)
+	//Generate HMAC tag for file
+	hmac_key_file := userlib.RandomBytes(16)
+	hmac_tag_file, hmac_error := userlib.HMACEval(hmac_key_file, encrypted_file_header)
+	_ = hmac_error
+
+	//Generate file and hmac uuids
+	file_header_uuid, file_header_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + updated_user_data.Username + "0"))[:16])
+	if file_header_uuid_err != nil {
+		return file_header_uuid_err
+	}
+	file_hmac_uuid, file_hmac_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + updated_user_data.Username + "1"))[:16])
+	if file_hmac_uuid_err != nil {
+		return file_hmac_uuid_err
+	}
+
+	//Store secured information in datastore
+	userlib.DatastoreSet(file_header_uuid, encrypted_file_header)
+	userlib.DatastoreSet(file_hmac_uuid, hmac_tag_file)
+
+	// Update user's FilesOwned map
+
 	return
 }
 
@@ -359,22 +364,13 @@ func main() {
 	//fmt.Println("User pointer:", user)
 	fmt.Println("Error:", err)
 
-	//Test GetUser
-	retrieved_user_web, get_user_err := GetUser(username, password)
-	//retrieved_user_phone, get_user_err_2 := GetUser(username, password)
-	if get_user_err != nil {
-		panic(get_user_err)
+	//Test StoreFile
+	test_content := []byte("Hello World")
+	user1, user1_init_err := InitUser(username, password)
+	if user1_init_err != nil {
+		panic(user1_init_err)
 	}
-	_ = retrieved_user_web
 
-	var test_arr [2]string
-
-	test_arr[0] = "Hello"
-	test_arr[1] = "World"
-
-	retrieved_user_web.Files_owned[uuid.New()] = test_arr
-	retrieved_user_web.ChangeUsername("NewUsername")
-
-	fmt.Println("Retrieved_User_Web Address:", retrieved_user_web)
+	user1.StoreFile("test_file", test_content)
 	//Test File Storage
 }
