@@ -264,9 +264,6 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 }
 
 func (userdata *User) StoreFile(filename string, content []byte) (err error) {
-	fmt.Println("begin")
-	fmt.Println("username:", userdata.Username)
-	fmt.Println("password:", userdata.Password)
 	//Before anything, CHECK FOR UPDATES IN DATASTORE (for multiple sessions, in case another session makes an update)
 	updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
 	if get_user_err != nil { // If somehow the user isn't in datastore, definitely an error lol
@@ -277,15 +274,11 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	userdata.Files_owned = updated_user_data.Files_owned
 	userdata.Invitation_list = updated_user_data.Invitation_list
 	userdata.Shared_files = updated_user_data.Shared_files
-	fmt.Println("User updated successfully")
 
 	//Generate random SE and HMAC keys that will be used for all file pages
 	se_key_page := userlib.RandomBytes(16)
 	hmac_key_page := userlib.RandomBytes(16)
 
-	//Test updated_user info
-	fmt.Println("Updated user data:", userdata)
-	fmt.Println("page list initialized successfully")
 	//Create new file header
 	file_header := FileHeader{
 		Owner:         userdata.Username,
@@ -294,7 +287,7 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 		SE_key_page:   se_key_page,
 		HMAC_key_page: hmac_key_page,
 	}
-	fmt.Println("File Header initialized successfully")
+
 	// Split content into pages, each 256 bytes
 	for i := 0; i < len(content); i++ {
 		if i%256 == 0 {
