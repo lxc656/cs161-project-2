@@ -106,13 +106,13 @@ type User struct {
 	DS_Private  userlib.DSSignKey //User's private digital signature key to be used for verification, 16 bytes
 
 	//key: file uuid, value: [SE_Key_File, HMAC_Key_File]
-	Files_owned map[uuid.UUID][2]string
+	Files_owned map[string][2]string
 
 	//key: file uuid, value: list of invitation IDs for each file
 	Invitation_list map[uuid.UUID][]string
 
 	//key: file uuid, value: list of invitation IDs for each file
-	Shared_files map[uuid.UUID][]string
+	Shared_files map[string][]string
 
 	// You can add other attributes here if you want! But note that in order for attributes to
 	// be included when this struct is serialized to/from JSON, they must be capitalized.

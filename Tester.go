@@ -82,6 +82,7 @@ func someUsefulThings() {
 
 type User struct {
 	Username    string
+	Password    string            // Only used to pull updates from datastore
 	PKE_Private userlib.PKEDecKey //User's private key to be used in RSA Encryption
 	DS_Private  userlib.DSSignKey //User's private digital signature key to be used for verification, 16 bytes
 
@@ -91,8 +92,8 @@ type User struct {
 	//key: file uuid, value: list of invitation IDs for each file
 	Invitation_list map[uuid.UUID][]string
 
-	//key: file uuid, value: list of invitation IDs for each file
-	Shared_files map[uuid.UUID][]string
+	//key: filename, value: invitation ID recived for a particular file
+	Shared_files map[uuid.UUID]uuid.UUID
 
 	// You can add other attributes here if you want! But note that in order for attributes to
 	// be included when this struct is serialized to/from JSON, they must be capitalized.
@@ -104,17 +105,29 @@ type User struct {
 
 //Struct used to represnet a file header, stored in DataStore along with users
 type FileHeader struct {
-	Owner     string   //Owner of the file
-	Filename  string   //filenamed
-	Page_list []string //list of uuids that each point to pages of the file
-
-	SE_key_page   []byte //16 byte symmetric key
-	HMAC_key_page []byte
+	Owner         string         // Owner of the file
+	Filename      string         // filenamed
+	Page_list     [][2]uuid.UUID // list of uuid pairs (one points to page, other points to hmac tag)
+	SE_key_page   []byte         // 16 byte symmetric key
+	HMAC_key_page []byte         // 16 byte HMAC key
 }
 
 //Page struct, a bunch of these are gathered together to form a full file
 type Page struct {
 	Text []byte //text of a page, limited to 256 bytes
+}
+
+//function for generating a new random uuid that has not been taken yet
+func generate_new_uuid() (random_uuid uuid.UUID) {
+	new_uuid := uuid.New()
+	item, ok := userlib.DatastoreGet(new_uuid)
+	_ = item
+	for ok { //while the uuid is taken in datastore, generate a new uuid
+		new_uuid = uuid.New()
+		item, ok = userlib.DatastoreGet(new_uuid)
+		_ = item
+	}
+	return new_uuid
 }
 
 func InitUser(username string, password string) (userdataptr *User, err error) {
@@ -153,13 +166,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 			DS_Private:      ds_sign_key,
 			Files_owned:     make(map[uuid.UUID][2]string),
 			Invitation_list: make(map[uuid.UUID][]string),
-			Shared_files:    make(map[uuid.UUID][]string),
-		}
-
-		//Generate and store HMAC tag
-		user_hmac_uuid, err_user_hmac_uuid := uuid.FromBytes(userlib.Hash([]byte(new_user.Username + "1"))[0:16])
-		if err_user_hmac_uuid != nil {
-			return nil, fmt.Errorf("Error generating user's hmac UUID: %v", user_hmac_uuid)
+			Shared_files:    make(map[uuid.UUID]uuid.UUID),
 		}
 
 		// Serialize new user
@@ -168,11 +175,17 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 			return nil, fmt.Errorf("Error serializing: %v", err_marshal)
 		}
 
+		//Generate uuid for HMAC tag
+		user_hmac_uuid, err_user_hmac_uuid := uuid.FromBytes(userlib.Hash([]byte(new_user.Username + "1"))[0:16])
+		if err_user_hmac_uuid != nil {
+			return nil, fmt.Errorf("Error generating user's hmac UUID: %v", user_hmac_uuid)
+		}
+
 		// Encrypy new user
 		SE_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(new_user.Username+"0")), 16)
 		encrypted_user := userlib.SymEnc(SE_Key_User, userlib.RandomBytes(16), marshaled_user)
 
-		// HMAC new user
+		// Generate HMAC tag
 		HMAC_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(new_user.Username+"1")), 16)
 		HMAC_tag_user, hmac_error := userlib.HMACEval(HMAC_Key_User, encrypted_user)
 		_ = hmac_error
@@ -220,7 +233,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	//Decrypt user
 	decrypted_user := userlib.SymDec(SE_Key_User, user_struct)
 
-	var unmarshaled_user User
+	var unmarshaled_user User //User struct to be returned
 	if unmarshal_err := json.Unmarshal(decrypted_user, &unmarshaled_user); unmarshal_err != nil {
 		return nil, fmt.Errorf("Error unmarshaling user struct: %v", unmarshal_err)
 	}
@@ -230,16 +243,109 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 }
 
 func (userdata *User) StoreFile(filename string, content []byte) (err error) {
-	storageKey, err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
-	if err != nil {
-		return err
+	//Before anything, CHECK FOR UPDATES IN DATASTORE (for multiple sessions, in case another session makes an update)
+	updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
+	if get_user_err != nil { // If somehow the user isn't in datastore, definitely an error lol
+		fmt.Errorf(get_user_err.Error())
 	}
-	contentBytes, err := json.Marshal(content)
-	if err != nil {
-		return err
+
+	//From now on, use updated_user_data for file storage
+
+	//Generate uuid for file
+	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + updated_user_data.Username))[:16])
+	if file_uuid_err != nil {
+		return file_uuid_err
 	}
-	userlib.DatastoreSet(storageKey, contentBytes)
+
+	/*DEPRECIATED, DOESN'T MATTER IF FILE EXISTS ALREADY OR NOT
+	----------------------------------------------------
+	//Check if file with same name already exists
+	retrieved_file, ok := userlib.DatastoreGet(file_uuid)
+	if ok { // if the file already exists, overwrite
+
+	}
+	*/
+
+	//Generate random SE and HMAC keys that will be used for all file pages
+	se_key_page := userlib.RandomBytes(16)
+	hmac_key_page := userlib.RandomBytes(16)
+
+	//Create new file header
+	file_header := FileHeader{
+		Owner:         updated_user_data.Username,
+		Filename:      filename,
+		Page_list:     make([][2]uuid.UUID, 0), // List of page UUIDs, in order
+		SE_key_page:   se_key_page,
+		HMAC_key_page: hmac_key_page,
+	}
+	// Split content into pages, each 256 bytes
+	for i := 0; i < len(content); i++ {
+		if i%256 == 0 {
+			var new_page Page
+			if i+256 <= len(content) {
+				new_page = Page{
+					Text: content[i : i+256],
+				}
+			} else {
+				new_page = Page{
+					Text: content[i:],
+				}
+				break
+			}
+			// Marshal each page
+			marshaled_page, err_marshal := json.Marshal(new_page)
+			if err_marshal != nil {
+				return fmt.Errorf("Error serializing file page: %v", err_marshal)
+			}
+
+			//Generate uuid for page and HMAC tag
+			page_hmac_uuid := generate_new_uuid()
+			page_uuid := generate_new_uuid()
+
+			// Encrypt and create HMAC tag for each page
+			encrypted_page := userlib.SymEnc(file_header.SE_key_page, userlib.RandomBytes(16), marshaled_page)
+			hmac_tag_page, hmac_error := userlib.HMACEval(hmac_key_page, encrypted_page)
+			_ = hmac_error
+
+			// Store encrypted page and hmac tag in datastore
+			userlib.DatastoreSet(page_uuid, encrypted_page)
+			userlib.DatastoreSet(page_hmac_uuid, hmac_tag_page)
+
+			// Update File Header
+			var to_append = [2]userlib.UUID{page_uuid, page_hmac_uuid}
+			file_header.Page_list = append(file_header.Page_list, to_append)
+		}
+	}
+
+	//marshal file
+	file_header_marshaled, file_marshal_err := json.Marshal(content)
+	if err != nil {
+		return file_marshal_err
+	}
+
+	//Encrypt file
+
+	userlib.DatastoreSet(storageKey, content_marshaled)
 	return
+}
+
+// func (userdata *User) LoadFile(filename string) (content []byte, err error)  {
+// 	updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
+// 	if get_user_err != nil {// If somehow the user isn't in datastore, definitely an error lol
+// 		fmt.Errorf(get_user_err.Error())
+// 	}
+// 	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+// 	if file_uuid_err != nil {
+// 		return file_uuid_err
+// 	}
+// 	for key, element := range updated_user_data.Shared_files {
+// 		if key == filename:
+// 			file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+//     }
+
+// }
+func (userdata *User) ChangeUsername(new_username string) {
+	userdata.Username = new_username
 }
 
 func main() {
@@ -255,7 +361,7 @@ func main() {
 
 	//Test GetUser
 	retrieved_user_web, get_user_err := GetUser(username, password)
-	retrieved_user_phone, get_user_err_2 := GetUser(username, password)
+	//retrieved_user_phone, get_user_err_2 := GetUser(username, password)
 	if get_user_err != nil {
 		panic(get_user_err)
 	}
@@ -267,10 +373,8 @@ func main() {
 	test_arr[1] = "World"
 
 	retrieved_user_web.Files_owned[uuid.New()] = test_arr
-	retrieved_user_web.Username = "changed_usr"
+	retrieved_user_web.ChangeUsername("NewUsername")
 
-	fmt.Println("Retrieved_User_Web Address:", &retrieved_user_web)
-	fmt.Println("Error:", get_user_err_2)
-	fmt.Println("user_phone address:", &retrieved_user_phone)
+	fmt.Println("Retrieved_User_Web Address:", retrieved_user_web)
 	//Test File Storage
 }
