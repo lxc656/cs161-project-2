@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 
 	userlib "github.com/cs161-staff/project2-userlib"
 	"github.com/google/uuid"
@@ -162,6 +161,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 
 		new_user := User{
 			Username:        username,
+			Password:        password,
 			PKE_Private:     pke_private,
 			DS_Private:      ds_sign_key,
 			Files_owned:     make(map[uuid.UUID][2][]byte),
@@ -222,9 +222,9 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 		return nil, fmt.Errorf("Error generating hmac uuid: %v", uuid_hmac_err)
 	}
 	stored_hmac_tag, hmac_ok := userlib.DatastoreGet(stored_hmac_uuid)
-	_ = hmac_ok
 	computed_hmac_tag, computed_hmac_error := userlib.HMACEval(HMAC_Key_User, user_struct)
 	_ = computed_hmac_error
+	_ = hmac_ok
 
 	if !(userlib.HMACEqual(stored_hmac_tag, computed_hmac_tag)) {
 		return nil, fmt.Errorf("Warning: User struct has been tampered with!")
@@ -243,24 +243,37 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 }
 
 func (userdata *User) StoreFile(filename string, content []byte) (err error) {
+	fmt.Println("begin")
+	fmt.Println("username:", userdata.Username)
+	fmt.Println("password:", userdata.Password)
 	//Before anything, CHECK FOR UPDATES IN DATASTORE (for multiple sessions, in case another session makes an update)
 	updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
 	if get_user_err != nil { // If somehow the user isn't in datastore, definitely an error lol
-		fmt.Errorf(get_user_err.Error())
+		return fmt.Errorf("Error: user info not found: %v", get_user_err.Error())
 	}
+
+	//update attributes of userdata
+	userdata.Files_owned = updated_user_data.Files_owned
+	userdata.Invitation_list = updated_user_data.Invitation_list
+	userdata.Shared_files = updated_user_data.Shared_files
+	fmt.Println("User updated successfully")
 
 	//Generate random SE and HMAC keys that will be used for all file pages
 	se_key_page := userlib.RandomBytes(16)
 	hmac_key_page := userlib.RandomBytes(16)
 
+	//Test updated_user info
+	fmt.Println("Updated user data:", userdata)
+	fmt.Println("page list initialized successfully")
 	//Create new file header
 	file_header := FileHeader{
-		Owner:         updated_user_data.Username,
+		Owner:         userdata.Username,
 		Filename:      filename,
 		Page_list:     make([][2]uuid.UUID, 0), // List of page UUIDs, in order
 		SE_key_page:   se_key_page,
 		HMAC_key_page: hmac_key_page,
 	}
+	fmt.Println("File Header initialized successfully")
 	// Split content into pages, each 256 bytes
 	for i := 0; i < len(content); i++ {
 		if i%256 == 0 {
@@ -316,11 +329,11 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	_ = hmac_error
 
 	//Generate file and hmac uuids
-	file_header_uuid, file_header_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + updated_user_data.Username + "0"))[:16])
+	file_header_uuid, file_header_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username + "0"))[:16])
 	if file_header_uuid_err != nil {
 		return file_header_uuid_err
 	}
-	file_hmac_uuid, file_hmac_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + updated_user_data.Username + "1"))[:16])
+	file_hmac_uuid, file_hmac_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username + "1"))[:16])
 	if file_hmac_uuid_err != nil {
 		return file_hmac_uuid_err
 	}
@@ -330,7 +343,7 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	userlib.DatastoreSet(file_hmac_uuid, hmac_tag_file)
 
 	// Update user's FilesOwned map
-
+	userdata.Files_owned[file_header_uuid] = [2][]byte{se_key_file, hmac_key_file}
 	return
 }
 
@@ -354,23 +367,22 @@ func (userdata *User) ChangeUsername(new_username string) {
 }
 
 func main() {
-	fmt.Println("My favorite number is", rand.Intn(10))
-
 	username := "esong200"
 	password := "cs161"
 
-	user, err := InitUser(username, password)
-	_ = user
-	//fmt.Println("User pointer:", user)
-	fmt.Println("Error:", err)
-
-	//Test StoreFile
 	test_content := []byte("Hello World")
 	user1, user1_init_err := InitUser(username, password)
 	if user1_init_err != nil {
 		panic(user1_init_err)
 	}
+	fmt.Println("User successfully created")
 
-	user1.StoreFile("test_file", test_content)
 	//Test File Storage
+	err := user1.StoreFile("new_file.txt", test_content)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("File successfully stored")
+
+	fmt.Println(user1.Files_owned)
 }
