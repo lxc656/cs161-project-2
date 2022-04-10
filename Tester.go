@@ -91,8 +91,8 @@ type User struct {
 	//key: file uuid, value: list of invitation IDs for each file
 	Invitation_list map[uuid.UUID][]uuid.UUID
 
-	//key: filename, value: invitation ID recived for a particular file
-	Shared_files map[uuid.UUID]uuid.UUID
+	//key: filename, value: [sender, invitation uuid (as string)]
+	Shared_files map[string][2]string
 
 	// You can add other attributes here if you want! But note that in order for attributes to
 	// be included when this struct is serialized to/from JSON, they must be capitalized.
@@ -111,9 +111,19 @@ type FileHeader struct {
 	HMAC_key_page []byte         // 16 byte HMAC key
 }
 
-//Page struct, a bunch of these are gathered together to form a full file
+// Page struct, a bunch of these are gathered together to form a full file
 type Page struct {
 	Text []byte //text of a page, limited to 256 bytes
+}
+
+// Invitation structure used to access files the user does not own. Stored in datastore, encrypted with RSA.
+type Invitation struct {
+	FileUUID            uuid.UUID
+	Sender              string // Username of sender
+	Recipient           string
+	SE_Key_Invitation   []byte
+	HMAC_Key_Invitation []byte
+	InvitationKeysUUID  string
 }
 
 //function for generating a new random uuid that has not been taken yet
@@ -166,7 +176,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 			DS_Private:      ds_sign_key,
 			Files_owned:     make(map[uuid.UUID][2][]byte),
 			Invitation_list: make(map[uuid.UUID][]uuid.UUID),
-			Shared_files:    make(map[uuid.UUID]uuid.UUID),
+			Shared_files:    make(map[string][2]string),
 		}
 
 		// Serialize new user
@@ -347,42 +357,94 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	return
 }
 
-// func (userdata *User) LoadFile(filename string) (content []byte, err error)  {
-// 	updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
-// 	if get_user_err != nil {// If somehow the user isn't in datastore, definitely an error lol
-// 		fmt.Errorf(get_user_err.Error())
-// 	}
-// 	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
-// 	if file_uuid_err != nil {
-// 		return file_uuid_err
-// 	}
-// 	for key, element := range updated_user_data.Shared_files {
-// 		if key == filename:
-// 			file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
-//     }
+func (userdata *User) LoadFile(filename string) (content []byte, err error) {
+	// Before anything, CHECK FOR UPDATES IN DATASTORE (for multiple sessions, in case another session makes an update)
+	updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
+	if get_user_err != nil { // If somehow the user isn't in datastore, definitely an error lol
+		return nil, fmt.Errorf("Error: user info not found: %v", get_user_err.Error())
+	}
 
-// }
+	// Update attributes of userdata
+	userdata.Files_owned = updated_user_data.Files_owned
+	userdata.Invitation_list = updated_user_data.Invitation_list
+	userdata.Shared_files = updated_user_data.Shared_files
+
+	// Derive file and hmac uuids
+	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username + "0"))[:16])
+	if file_uuid_err != nil {
+		return nil, file_uuid_err
+	}
+	file_hmac_uuid, file_hmac_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username + "1"))[:16])
+	if file_hmac_uuid_err != nil {
+		return nil, file_hmac_uuid_err
+	}
+
+	// First, check datastore if given user's filename exists
+	encrypted_file, file_exists_in_datastore := userlib.DatastoreGet(file_uuid)
+	if !file_exists_in_datastore { // If user is not found in datastore
+		return nil, fmt.Errorf("File doesn't exist in datastore:")
+	}
+	var se_key_file []byte
+	var hmac_key_file []byte
+	// Then, check if user owns the file
+	if file_keys, user_owns_file := userdata.Files_owned[file_uuid]; user_owns_file { // if the user owns the file
+		//obtain file keys from Files_owned map
+		se_key_file = file_keys[0]
+		hmac_key_file = file_keys[1]
+
+	} else { //The file is shared with the user (user does not own the file), and the user will have to access the file via invitation
+		//To do: Locate file in user's Shared_files map, then obtain sender from invitation, then update invitation (incase of revoked user)
+		//Then access file through invitation information
+
+		//Obtain invitation
+		invitation_uuid, parse_err := uuid.Parse(userdata.Shared_files[filename][1])
+		if parse_err != nil {
+			return nil, fmt.Errorf("Error parsing uuid: %v", parse_err)
+		}
+		encrypted_invitation, ok := userlib.DatastoreGet(invitation_uuid)
+		if !ok {
+			return nil, fmt.Errorf("Error obtaining invitation from datastore")
+		}
+
+		//verify invitation
+		// DS signature will be at the end of the marshaled encrypted invitation
+		sender := userdata.Shared_files[filename][0]
+		sender_public_ds_key, ok := userlib.KeystoreGet(string(userlib.Hash([]byte(sender + "1"))))
+		if !ok {
+			return nil, fmt.Errorf("Error obtaining public ds key from keystore")
+		}
+		ds_verify_err := userlib.DSVerify(sender_public_ds_key, encrypted_invitation)
+		invitation, pke_err := userlib.PKEDec(userdata.PKE_Private, encrypted_invitation)
+		se
+	}
+
+	// Verify HMAC of the file
+	stored_hmac_tag_file, hmac_ok := userlib.DatastoreGet(file_hmac_uuid)
+	computed_hmac_tag_file, computed_hmac_error := userlib.HMACEval(hmac_key_file, encrypted_file)
+	_ = computed_hmac_error
+	_ = hmac_ok
+
+	if !(userlib.HMACEqual(stored_hmac_tag_file, computed_hmac_tag_file)) {
+		return nil, fmt.Errorf("Warning: File header has been tampered with!")
+	}
+	// for key, element := range updated_user_data.Shared_files {
+	// 		if key == filename:
+	// 			file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+	//     }
+	// return
+
+}
+
 func (userdata *User) ChangeUsername(new_username string) {
 	userdata.Username = new_username
 }
 
 func main() {
-	username := "esong200"
-	password := "cs161"
+	//username := "esong200"
+	//password := "cs161"
 
-	test_content := []byte("Hello World")
-	user1, user1_init_err := InitUser(username, password)
-	if user1_init_err != nil {
-		panic(user1_init_err)
-	}
-	fmt.Println("User successfully created")
+	new_uuid := generate_new_uuid()
+	fmt.Println(new_uuid.String())
+	// Test multiple users
 
-	//Test File Storage
-	err := user1.StoreFile("new_file.txt", test_content)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("File successfully stored")
-
-	fmt.Println(user1.Files_owned)
 }
