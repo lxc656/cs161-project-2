@@ -838,7 +838,46 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		hmac_key_file = file_keys[1]
 
 	} else { // If the user doesn't own the file they want to share
+		// TODO: Access invitation for shared file, then create your own derived invitation
 
+		sender := userdata.Shared_files[filename][0]
+
+		//key: filename, value: [sender, invitation uuid (as string)]
+		combined_inv_uuid, parse_err := uuid.Parse(userdata.Shared_files[filename][1])
+		if parse_err != nil {
+			return null_uuid, fmt.Errorf(parse_err.Error())
+		}
+
+		// When calling acceptInvitation to update the invitation, in this case, if the filename already exists in the user's files_shared namespace, don't error
+		// This makes the same invitation_uuid point to the UPDATED invitation with updated keys
+		userdata.AcceptInvitation(sender, combined_inv_uuid, filename)
+
+		combined_inv_signed, combined_inv_signed_exists := userlib.DatastoreGet(combined_inv_uuid)
+		if !combined_inv_signed_exists {
+			return null_uuid, fmt.Errorf("Error: combined invitation cannot be found in datastore")
+		}
+
+		// Verify combined invitation
+		combined_inv_marshaled := combined_inv_signed[0 : len(combined_inv_signed)-256]
+		ds_signature_combined_inv := combined_inv_signed[len(combined_inv_signed)-256:]
+		sender_public_ds_key, ok := userlib.KeystoreGet(string(userlib.Hash([]byte(sender + "1"))))
+		if !ok {
+			return null_uuid, fmt.Errorf("While creating invitation, Error obtaining public ds key from keystore")
+		}
+		ds_verify_err := userlib.DSVerify(sender_public_ds_key, combined_inv_marshaled, ds_signature_combined_inv)
+		if ds_verify_err != nil {
+			return null_uuid, fmt.Errorf("Warning: Invitation has been tampered with! %v", ds_verify_err)
+		}
+
+		// Unmarshal then combine invitation into individually encrypted invitation segments
+		var combined_inv []uuid.UUID
+		combined_inv_unmarshal_err := json.Unmarshal(combined_inv_marshaled, &combined_inv)
+		if combined_inv_unmarshal_err != nil {
+			return null_uuid, fmt.Errorf("While creating invitation, error unmarshaling combined invitation: %v", combined_inv_unmarshal_err)
+		}
+
+		for i := 0; i < len(combined_inv); i++ {
+		}
 	}
 
 	// Generate UUID for FileKeys
@@ -856,16 +895,16 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		return null_uuid, file_marshal_err
 	}
 
-	//Encrypt file
+	//Encrypt file keys
 	se_key_file_keys := userlib.RandomBytes(16)
 	encrypted_file_keys := userlib.SymEnc(se_key_file_keys, userlib.RandomBytes(16), file_keys_marshaled)
 
-	//Generate HMAC tag for file
+	//Generate HMAC tag for file keys
 	hmac_key_file_keys := userlib.RandomBytes(16)
 	hmac_tag_file_keys, hmac_error := userlib.HMACEval(hmac_key_file_keys, encrypted_file_keys)
 	_ = hmac_error
 
-	// Append hmac_tag_file behind file header
+	// Append hmac_tag_file_keys behind file_keys
 	encrypted_file_keys_tagged := append(encrypted_file_keys, hmac_tag_file_keys...)
 
 	//Store file keys in datastore
@@ -936,77 +975,25 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 			invitation_uuid_list = append(invitation_uuid_list, invitation_uuid)
 		}
 	}
-	// invitation_marshaled_1 := invitation_marshaled[0:126]
-	// invitation_marshaled_2 := invitation_marshaled[126:]
 
-	// Encrypt invitations with recipient's public PKE key
-
-	// Encrypt with recipient's public key
-	// NOTE: Maximum RSA plaintext size: 126 bytes (idea: divide invitation into 3 parts)
-	// var invitation_uuid_list []uuid.UUID
-	// fmt.Println("DEBUG: marshaled invitation lengths:")
-	// for i := 0; i < len(invitations_marshaled_list); i++ {
-	// 	// For each item in invitations_marshaled_list, encrypt and sign
-	// 	fmt.Println(len(invitations_marshaled_list[i]))
-
-	// 	// Encrypt
-	// 	invitation_encrypted, pke_encryption_error := userlib.PKEEnc(recipient_public_pke_key, invitations_marshaled_list[i])
-	// 	if pke_encryption_error != nil {
-	// 		return null_uuid, fmt.Errorf("PKE encryption error: %v", pke_encryption_error)
-	// 	}
-
-	// 	// Sign
-	// 	ds_signature, signature_err := userlib.DSSign(userdata.DS_Private, invitation_encrypted)
-	// 	if signature_err != nil {
-	// 		return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
-	// 	}
-
-	// 	// Append signature to encrypted invitation
-	// 	invitation_encrypted_signed := append(invitation_encrypted, ds_signature...)
-
-	// 	// Generate Invitation uuid
-	// 	invitation_uuid := generate_new_uuid()
-
-	// 	// Store secured information in datastore
-	// 	userlib.DatastoreSet(invitation_uuid, invitation_encrypted_signed)
-
-	// 	invitation_uuid_list = append(invitation_uuid_list, invitation_uuid)
-	// }
-
-	// invitation_encrypted_1, pke_encryption_error := userlib.PKEEnc(recipient_public_pke_key, invitation_marshaled_1)
-	// invitation_encrypted_2, pke_encryption_error := userlib.PKEEnc(recipient_public_pke_key, invitation_marshaled_2)
-	// if pke_encryption_error != nil {
-	// 	return null_uuid, fmt.Errorf("PKE encryption error: %v", pke_encryption_error)
-	// }
-
-	// // Sign with user's private DS key
-	// ds_signature_1, signature_err := userlib.DSSign(userdata.DS_Private, invitation_encrypted_1)
-	// ds_signature_2, signature_err := userlib.DSSign(userdata.DS_Private, invitation_encrypted_2)
-	// if signature_err != nil {
-	// 	return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
-	// }
-
-	// // Append signature to encrypted invitation
-	// invitation_encrypted_signed_1 := append(invitation_encrypted_1, ds_signature_1...)
-	// invitation_encrypted_signed_2 := append(invitation_encrypted_2, ds_signature_2...)
-
-	// // Generate Invitation uuid
-	// invitation_uuid_1 := generate_new_uuid()
-	// invitation_uuid_2 := generate_new_uuid()
-	// // Store secured information in datastore
-	// userlib.DatastoreSet(invitation_uuid_1, invitation_encrypted_signed_1)
-	// userlib.DatastoreSet(invitation_uuid_2, invitation_encrypted_signed_2)
-
-	// invitation_uuid_arr := [2]uuid.UUID{invitation_uuid_1, invitation_uuid_2}
-
-	//Store pair of invitation uuids in datastore under single uuid
+	//Store list of invitation uuids in datastore under single uuid
 	var inv_uuids_marshaled []byte
 	inv_uuids_marshaled, inv_uuids_marshal_err := json.Marshal(invitation_uuid_list)
 	if inv_uuids_marshal_err != nil {
 		return null_uuid, fmt.Errorf("Error marshaling uuid pair: %v", inv_uuids_marshal_err)
 	}
 	combined_inv_uuid := generate_new_uuid()
-	userlib.DatastoreSet(combined_inv_uuid, inv_uuids_marshaled)
+
+	// Sign combined uuid
+	ds_signature_combined_inv_uuid, signature_err := userlib.DSSign(userdata.DS_Private, inv_uuids_marshaled)
+	if signature_err != nil {
+		return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
+	}
+
+	// Append signature to encrypted invitation
+	inv_uuids_marshaled_signed := append(inv_uuids_marshaled, ds_signature_combined_inv_uuid...)
+
+	userlib.DatastoreSet(combined_inv_uuid, inv_uuids_marshaled_signed)
 
 	// Update user's InvitationList map
 
@@ -1049,7 +1036,7 @@ func main() {
 		panic(laptop_err)
 	}
 
-	bob, bob_err := InitUser("bob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiew", "123")
+	bob, bob_err := InitUser("bob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiewbob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiewbob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiewbob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiew", "123")
 	if bob_err != nil {
 		panic(bob_err)
 	}
@@ -1087,7 +1074,7 @@ func main() {
 	fmt.Println(string(appended_file))
 
 	//Test Create invitation
-	invitation_uuid, inv_err := alice.CreateInvitation("test_file.txt", "bob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiew")
+	invitation_uuid, inv_err := alice.CreateInvitation("test_file.txt", "bob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiewbob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiewbob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiewbob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiew")
 	if inv_err != nil {
 		panic(inv_err)
 	}
