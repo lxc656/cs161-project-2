@@ -88,7 +88,7 @@ type User struct {
 	//key: file uuid, value: [SE_Key_File, HMAC_Key_File]
 	Files_owned map[uuid.UUID][2][]byte
 
-	//key: file uuid, value: list of invitation IDs for each file
+	//key: file uuid, value: list of invitation ID pairs for each file
 	Invitation_list map[uuid.UUID][]uuid.UUID
 
 	//key: filename, value: [sender, invitation uuid (as string)]
@@ -887,7 +887,7 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		return null_uuid, invitation_marshal_err
 	}
 
-	// Encrypt invitation with recipient's public PKE key
+	//invitations_marshaled_list := make([][]byte, 0)
 
 	// Obtain recipient's public key
 	recipient_public_pke_key, recipient_public_key_exists := userlib.KeystoreGet(string(userlib.Hash([]byte(recipientUsername + "0"))))
@@ -895,28 +895,118 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		return null_uuid, fmt.Errorf("Error: recipient's public key could not be located")
 	}
 
+	var invitation_uuid_list []uuid.UUID
+	// Split invitation into chunks of 126 or less bytes
+	for i := 0; i < len(invitation_marshaled); i++ {
+		if i%126 == 0 {
+			var new_invitation_slice []byte
+			if i+126 <= len(invitation_marshaled) {
+				new_invitation_slice = invitation_marshaled[i : i+126]
+			} else {
+				new_invitation_slice = invitation_marshaled[i:]
+			}
+
+			//invitations_marshaled_list = append(invitations_marshaled_list, new_invitation_slice)
+
+			// For each item in invitations_marshaled_list, encrypt and sign
+			fmt.Println(len(new_invitation_slice))
+
+			// Encrypt invitations with recipient's public PKE key
+			// Encrypt
+			invitation_encrypted, pke_encryption_error := userlib.PKEEnc(recipient_public_pke_key, new_invitation_slice)
+			if pke_encryption_error != nil {
+				return null_uuid, fmt.Errorf("PKE encryption error: %v", pke_encryption_error)
+			}
+
+			// Sign
+			ds_signature, signature_err := userlib.DSSign(userdata.DS_Private, invitation_encrypted)
+			if signature_err != nil {
+				return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
+			}
+
+			// Append signature to encrypted invitation
+			invitation_encrypted_signed := append(invitation_encrypted, ds_signature...)
+
+			// Generate Invitation uuid
+			invitation_uuid := generate_new_uuid()
+
+			// Store secured information in datastore
+			userlib.DatastoreSet(invitation_uuid, invitation_encrypted_signed)
+
+			invitation_uuid_list = append(invitation_uuid_list, invitation_uuid)
+		}
+	}
+	// invitation_marshaled_1 := invitation_marshaled[0:126]
+	// invitation_marshaled_2 := invitation_marshaled[126:]
+
+	// Encrypt invitations with recipient's public PKE key
+
 	// Encrypt with recipient's public key
 	// NOTE: Maximum RSA plaintext size: 126 bytes (idea: divide invitation into 3 parts)
-	fmt.Println("DEBUG: marshaled invitation length:", len(invitation_marshaled))
-	invitation_encrypted, pke_encryption_error := userlib.PKEEnc(recipient_public_pke_key, invitation_marshaled)
-	if pke_encryption_error != nil {
-		return null_uuid, fmt.Errorf("PKE encryption error: %v", pke_encryption_error)
+	// var invitation_uuid_list []uuid.UUID
+	// fmt.Println("DEBUG: marshaled invitation lengths:")
+	// for i := 0; i < len(invitations_marshaled_list); i++ {
+	// 	// For each item in invitations_marshaled_list, encrypt and sign
+	// 	fmt.Println(len(invitations_marshaled_list[i]))
+
+	// 	// Encrypt
+	// 	invitation_encrypted, pke_encryption_error := userlib.PKEEnc(recipient_public_pke_key, invitations_marshaled_list[i])
+	// 	if pke_encryption_error != nil {
+	// 		return null_uuid, fmt.Errorf("PKE encryption error: %v", pke_encryption_error)
+	// 	}
+
+	// 	// Sign
+	// 	ds_signature, signature_err := userlib.DSSign(userdata.DS_Private, invitation_encrypted)
+	// 	if signature_err != nil {
+	// 		return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
+	// 	}
+
+	// 	// Append signature to encrypted invitation
+	// 	invitation_encrypted_signed := append(invitation_encrypted, ds_signature...)
+
+	// 	// Generate Invitation uuid
+	// 	invitation_uuid := generate_new_uuid()
+
+	// 	// Store secured information in datastore
+	// 	userlib.DatastoreSet(invitation_uuid, invitation_encrypted_signed)
+
+	// 	invitation_uuid_list = append(invitation_uuid_list, invitation_uuid)
+	// }
+
+	// invitation_encrypted_1, pke_encryption_error := userlib.PKEEnc(recipient_public_pke_key, invitation_marshaled_1)
+	// invitation_encrypted_2, pke_encryption_error := userlib.PKEEnc(recipient_public_pke_key, invitation_marshaled_2)
+	// if pke_encryption_error != nil {
+	// 	return null_uuid, fmt.Errorf("PKE encryption error: %v", pke_encryption_error)
+	// }
+
+	// // Sign with user's private DS key
+	// ds_signature_1, signature_err := userlib.DSSign(userdata.DS_Private, invitation_encrypted_1)
+	// ds_signature_2, signature_err := userlib.DSSign(userdata.DS_Private, invitation_encrypted_2)
+	// if signature_err != nil {
+	// 	return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
+	// }
+
+	// // Append signature to encrypted invitation
+	// invitation_encrypted_signed_1 := append(invitation_encrypted_1, ds_signature_1...)
+	// invitation_encrypted_signed_2 := append(invitation_encrypted_2, ds_signature_2...)
+
+	// // Generate Invitation uuid
+	// invitation_uuid_1 := generate_new_uuid()
+	// invitation_uuid_2 := generate_new_uuid()
+	// // Store secured information in datastore
+	// userlib.DatastoreSet(invitation_uuid_1, invitation_encrypted_signed_1)
+	// userlib.DatastoreSet(invitation_uuid_2, invitation_encrypted_signed_2)
+
+	// invitation_uuid_arr := [2]uuid.UUID{invitation_uuid_1, invitation_uuid_2}
+
+	//Store pair of invitation uuids in datastore under single uuid
+	var inv_uuids_marshaled []byte
+	inv_uuids_marshaled, inv_uuids_marshal_err := json.Marshal(invitation_uuid_list)
+	if inv_uuids_marshal_err != nil {
+		return null_uuid, fmt.Errorf("Error marshaling uuid pair: %v", inv_uuids_marshal_err)
 	}
-
-	// Sign with user's private DS key
-	ds_signature, signature_err := userlib.DSSign(userdata.DS_Private, invitation_encrypted)
-	if signature_err != nil {
-		return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
-	}
-
-	// Append signature to encrypted invitation
-	invitation_encrypted_signed := append(invitation_encrypted, ds_signature...)
-
-	// Generate Invitation uuid
-	invitation_uuid := generate_new_uuid()
-
-	// Store secured information in datastore
-	userlib.DatastoreSet(invitation_uuid, invitation_encrypted_signed)
+	combined_inv_uuid := generate_new_uuid()
+	userlib.DatastoreSet(combined_inv_uuid, inv_uuids_marshaled)
 
 	// Update user's InvitationList map
 
@@ -924,17 +1014,18 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	if inv_uuid_list, user_has_shared_file_already := userdata.Invitation_list[file_uuid]; user_has_shared_file_already {
 		//append to file's shared recipients list
 		_ = inv_uuid_list
-		userdata.Invitation_list[file_uuid] = append(userdata.Invitation_list[file_uuid], invitation_uuid)
 	} else {
 		//create new list for file
 		userdata.Invitation_list[file_uuid] = make([]uuid.UUID, 0)
 	}
+	userdata.Invitation_list[file_uuid] = append(userdata.Invitation_list[file_uuid], combined_inv_uuid)
+
 	update_user_error := UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
 	if update_user_error != nil {
 		return null_uuid, fmt.Errorf("Error updating user's files owned map: %v", update_user_error)
 	}
 
-	return invitation_uuid, nil
+	return combined_inv_uuid, nil
 }
 
 func (userdata *User) RevokeAccess(filename string, recipientUsername string) error {
@@ -958,7 +1049,7 @@ func main() {
 		panic(laptop_err)
 	}
 
-	bob, bob_err := InitUser("bob", "123")
+	bob, bob_err := InitUser("bob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiew", "123")
 	if bob_err != nil {
 		panic(bob_err)
 	}
@@ -995,25 +1086,8 @@ func main() {
 	}
 	fmt.Println(string(appended_file))
 
-	//Test PKE_Encryption
-	plaintext := make([]byte, 0)
-	for i := 0; i < 127; i++ {
-		plaintext = append(plaintext, 'a')
-	}
-
-	fmt.Println("Testing rsa encryption")
-	public_pke_key, recipient_public_key_exists := userlib.KeystoreGet(string(userlib.Hash([]byte("bob" + "0"))))
-	if !recipient_public_key_exists {
-		panic("Error: recipient's public key could not be located")
-	}
-	text_encrypted, pke_encryption_error := userlib.PKEEnc(public_pke_key, plaintext)
-	if pke_encryption_error != nil {
-		panic(pke_encryption_error)
-	}
-	fmt.Println("Encrypted text:", text_encrypted)
-
 	//Test Create invitation
-	invitation_uuid, inv_err := alice.CreateInvitation("test_file.txt", "bob")
+	invitation_uuid, inv_err := alice.CreateInvitation("test_file.txt", "bob1vkjfjhiurwfhrueihgfuirehfeiwfewhfiuewhfuhwefuiewhjewifheiuwhfiuewhfeiuwhfeiuwhfiuewhfuiew")
 	if inv_err != nil {
 		panic(inv_err)
 	}
