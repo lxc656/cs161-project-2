@@ -801,7 +801,29 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	//If the filename already exists in userdata's Shared_files, it is a call to update the invitation. Otherwise, error
 	return nil
 }
+func (userdata *User) CreateInvitation(filename string, recipientUsername string) (
+	invitationPtr uuid.UUID, err error) {
+	// Before anything, CHECK FOR UPDATES IN DATASTORE (for multiple sessions, in case another session makes an update)
+	var null_uuid uuid.UUID
+	updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
+	if get_user_err != nil { // If somehow the user isn't in datastore, definitely an error lol
+		return null_uuid, fmt.Errorf("Error: user info not found: %v", get_user_err.Error())
+	}
 
+	// Update attributes of userdata
+	userdata.Files_owned = updated_user_data.Files_owned
+	userdata.Invitation_list = updated_user_data.Invitation_list
+	userdata.Shared_files = updated_user_data.Shared_files
+
+	var file_uuid uuid.UUID
+
+	// First, che
+	return
+}
+
+func (userdata *User) RevokeAccess(filename string, recipientUsername string) error {
+	return nil
+}
 func (userdata *User) ChangeUsername(new_username string) {
 	userdata.Username = new_username
 }
