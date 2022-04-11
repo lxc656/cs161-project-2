@@ -15,7 +15,6 @@ import (
 	// hex.EncodeToString(...) is useful for converting []byte to string
 
 	// Useful for string manipulation
-	"strings"
 
 	// Useful for formatting strings (e.g. `fmt.Sprintf`).
 	"fmt"
@@ -112,8 +111,8 @@ type User struct {
 	//key: file uuid, value: list of invitation IDs for each file
 	Invitation_list map[uuid.UUID][]uuid.UUID
 
-	//key: filename, value: invitation ID recived for a particular file
-	Shared_files map[uuid.UUID]uuid.UUID
+	//key: filename, value: [sender, invitation uuid (as string)]
+	Shared_files map[string][2]string
 
 	// You can add other attributes here if you want! But note that in order for attributes to
 	// be included when this struct is serialized to/from JSON, they must be capitalized.
@@ -125,16 +124,32 @@ type User struct {
 
 //Struct used to represnet a file header, stored in DataStore along with users
 type FileHeader struct {
-	Owner         string         // Owner of the file
-	Filename      string         // filenamed
-	Page_list     [][2]uuid.UUID // list of uuid pairs (one points to page, other points to hmac tag)
-	SE_key_page   []byte         // 16 byte symmetric key
-	HMAC_key_page []byte         // 16 byte HMAC key
+	Owner         string      // Owner of the file
+	Filename      string      // filenamed
+	Page_list     []uuid.UUID // list of uuids pointing to pages
+	SE_key_page   []byte      // 16 byte symmetric key
+	HMAC_key_page []byte      // 16 byte HMAC key
 }
 
-//Page struct, a bunch of these are gathered together to form a full file
+// Page struct, a bunch of these are gathered together to form a full file
 type Page struct {
 	Text []byte //text of a page, limited to 256 bytes
+}
+
+// Invitation structure used to access files the user does not own. Stored in datastore, encrypted with RSA.
+type Invitation struct {
+	FileUUID           uuid.UUID
+	Sender             string // Username of sender
+	Recipient          string
+	SE_Key_File_Keys   []byte
+	HMAC_Key_File_Keys []byte
+	FileKeysUUID       uuid.UUID
+}
+
+// File keys the invitation points to. Changed when a user is revoked from sharing permissions.
+type FileKeys struct {
+	SE_Key_File   []byte
+	HMAC_Key_File []byte
 }
 
 //function for generating a new random uuid that has not been taken yet
@@ -187,7 +202,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 			DS_Private:      ds_sign_key,
 			Files_owned:     make(map[uuid.UUID][2][]byte),
 			Invitation_list: make(map[uuid.UUID][]uuid.UUID),
-			Shared_files:    make(map[uuid.UUID]uuid.UUID),
+			Shared_files:    make(map[string][2]string),
 		}
 
 		// Serialize new user
@@ -196,7 +211,8 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 			return nil, fmt.Errorf("Error serializing: %v", err_marshal)
 		}
 
-		//Generate uuid for HMAC tag
+		// Generate uuid for HMAC tag
+		// Note: hmac tag location deterministically generated
 		user_hmac_uuid, err_user_hmac_uuid := uuid.FromBytes(userlib.Hash([]byte(new_user.Username + "1"))[0:16])
 		if err_user_hmac_uuid != nil {
 			return nil, fmt.Errorf("Error generating user's hmac UUID: %v", user_hmac_uuid)
@@ -227,7 +243,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	user_hash := userlib.Hash([]byte(username))[0:16]
 	user_uuid, uuid_err := uuid.FromBytes(user_hash)
 	if uuid_err != nil {
-		fmt.Errorf("UUID Error:%v", uuid_err)
+		fmt.Errorf("UUID generation Error:%v", uuid_err)
 	}
 	user_struct, ok := userlib.DatastoreGet(user_uuid)
 	if !ok { // If user is not found in datastore
@@ -263,6 +279,76 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	return &unmarshaled_user, nil
 }
 
+func UpdateUserDataInDatastore(username string, password string, updated_user_data *User) (err error) {
+	//Check if user exists
+	user_hash := userlib.Hash([]byte(username))[0:16]
+	user_uuid, uuid_err := uuid.FromBytes(user_hash)
+	if uuid_err != nil {
+		fmt.Errorf("UUID generation Error:%v", uuid_err)
+	}
+	user_struct, ok := userlib.DatastoreGet(user_uuid)
+	if !ok { // If user is not found in datastore
+		return fmt.Errorf("User doesn't exist in datastore")
+	}
+	//Obtain keys determistically from provided username and password
+	SE_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(username+"0")), 16)
+	HMAC_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(username+"1")), 16)
+
+	//Verify HMAC
+	stored_hmac_uuid, uuid_hmac_err := uuid.FromBytes(userlib.Hash([]byte(username + "1"))[0:16])
+	if uuid_hmac_err != nil {
+		return fmt.Errorf("Error generating hmac uuid: %v", uuid_hmac_err)
+	}
+	stored_hmac_tag, hmac_ok := userlib.DatastoreGet(stored_hmac_uuid)
+	computed_hmac_tag, computed_hmac_error := userlib.HMACEval(HMAC_Key_User, user_struct)
+	_ = computed_hmac_error
+	_ = hmac_ok
+
+	if !(userlib.HMACEqual(stored_hmac_tag, computed_hmac_tag)) {
+		return fmt.Errorf("Warning: User struct has been tampered with!")
+	}
+
+	//Decrypt user
+	decrypted_user := userlib.SymDec(SE_Key_User, user_struct)
+
+	var user User //User struct to be updated
+	if unmarshal_err := json.Unmarshal(decrypted_user, &user); unmarshal_err != nil {
+		return fmt.Errorf("Error unmarshaling user struct: %v", unmarshal_err)
+	}
+
+	user.Files_owned = updated_user_data.Files_owned
+	user.Invitation_list = updated_user_data.Invitation_list
+	user.Shared_files = updated_user_data.Shared_files
+
+	// Serialize updated user
+	marshaled_user, err_marshal := json.Marshal(user)
+	if err_marshal != nil {
+		return fmt.Errorf("Error serializing: %v", err_marshal)
+	}
+
+	// Generate uuid for new HMAC tag
+	// Note: hmac tag location deterministically generated
+	user_hmac_uuid, err_user_hmac_uuid := uuid.FromBytes(userlib.Hash([]byte(user.Username + "1"))[0:16])
+	if err_user_hmac_uuid != nil {
+		return fmt.Errorf("Error generating uodated user's hmac UUID: %v", user_hmac_uuid)
+	}
+
+	// Encrypy new user
+	SE_Key_Updated_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(user.Username+"0")), 16)
+	encrypted_updated_user := userlib.SymEnc(SE_Key_Updated_User, userlib.RandomBytes(16), marshaled_user)
+
+	// Generate HMAC tag
+	HMAC_Key_Updated_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(user.Username+"1")), 16)
+	HMAC_tag_updated_user, hmac_error := userlib.HMACEval(HMAC_Key_Updated_User, encrypted_updated_user)
+	_ = hmac_error
+
+	// Add new encrypted user struct and their HMAC to datastore
+	userlib.DatastoreSet(user_uuid, encrypted_updated_user)
+	userlib.DatastoreSet(user_hmac_uuid, HMAC_tag_updated_user)
+
+	return
+}
+
 func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	//Before anything, CHECK FOR UPDATES IN DATASTORE (for multiple sessions, in case another session makes an update)
 	updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
@@ -270,12 +356,12 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 		return fmt.Errorf("Error: user info not found: %v", get_user_err.Error())
 	}
 
-	//update attributes of userdata
+	// Update attributes of userdata
 	userdata.Files_owned = updated_user_data.Files_owned
 	userdata.Invitation_list = updated_user_data.Invitation_list
 	userdata.Shared_files = updated_user_data.Shared_files
 
-	//Generate random SE and HMAC keys that will be used for all file pages
+	// Generate random SE and HMAC keys that will be used for all file pages
 	se_key_page := userlib.RandomBytes(16)
 	hmac_key_page := userlib.RandomBytes(16)
 
@@ -283,7 +369,7 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	file_header := FileHeader{
 		Owner:         userdata.Username,
 		Filename:      filename,
-		Page_list:     make([][2]uuid.UUID, 0), // List of page UUIDs, in order
+		Page_list:     make([]uuid.UUID, 0), // List of page UUIDs, in order
 		SE_key_page:   se_key_page,
 		HMAC_key_page: hmac_key_page,
 	}
@@ -300,16 +386,15 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 				new_page = Page{
 					Text: content[i:],
 				}
-				break
 			}
+
 			// Marshal each page
 			marshaled_page, err_marshal := json.Marshal(new_page)
 			if err_marshal != nil {
 				return fmt.Errorf("Error serializing file page: %v", err_marshal)
 			}
 
-			//Generate uuid for page and HMAC tag
-			page_hmac_uuid := generate_new_uuid()
+			// Generate uuid for page and HMAC tag
 			page_uuid := generate_new_uuid()
 
 			// Encrypt and create HMAC tag for each page
@@ -317,18 +402,19 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 			hmac_tag_page, hmac_error := userlib.HMACEval(hmac_key_page, encrypted_page)
 			_ = hmac_error
 
-			// Store encrypted page and hmac tag in datastore
-			userlib.DatastoreSet(page_uuid, encrypted_page)
-			userlib.DatastoreSet(page_hmac_uuid, hmac_tag_page)
+			// Append HMAC tag behind the encrypted page
+			encrypted_page_tagged := append(encrypted_page, hmac_tag_page...)
 
-			// Update File Header
-			var to_append = [2]userlib.UUID{page_uuid, page_hmac_uuid}
-			file_header.Page_list = append(file_header.Page_list, to_append)
+			// Store encrypted page in datastore
+			userlib.DatastoreSet(page_uuid, encrypted_page_tagged)
+
+			// Add new page uuid to file header
+			file_header.Page_list = append(file_header.Page_list, page_uuid)
 		}
 	}
 
 	//marshal file
-	file_header_marshaled, file_marshal_err := json.Marshal(content)
+	file_header_marshaled, file_marshal_err := json.Marshal(file_header)
 	if err != nil {
 		return file_marshal_err
 	}
@@ -342,40 +428,184 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	hmac_tag_file, hmac_error := userlib.HMACEval(hmac_key_file, encrypted_file_header)
 	_ = hmac_error
 
-	//Generate file and hmac uuids
+	// Append hmac_tag_file behind file header
+	encrypted_file_header_tagged := append(encrypted_file_header, hmac_tag_file...)
+
+	//Generate file uuid
 	file_header_uuid, file_header_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username + "0"))[:16])
 	if file_header_uuid_err != nil {
 		return file_header_uuid_err
 	}
-	file_hmac_uuid, file_hmac_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username + "1"))[:16])
-	if file_hmac_uuid_err != nil {
-		return file_hmac_uuid_err
-	}
 
 	//Store secured information in datastore
-	userlib.DatastoreSet(file_header_uuid, encrypted_file_header)
-	userlib.DatastoreSet(file_hmac_uuid, hmac_tag_file)
+	userlib.DatastoreSet(file_header_uuid, encrypted_file_header_tagged)
 
 	// Update user's FilesOwned map
 	userdata.Files_owned[file_header_uuid] = [2][]byte{se_key_file, hmac_key_file}
+	update_user_error := UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
+	if update_user_error != nil {
+		return fmt.Errorf("Error updating user's files owned map: %v", update_user_error)
+	}
 	return
+}
+
+func (userdata *User) LoadFile(filename string) (content []byte, err error) {
+	// Before anything, CHECK FOR UPDATES IN DATASTORE (for multiple sessions, in case another session makes an update)
+	updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
+	if get_user_err != nil { // If somehow the user isn't in datastore, definitely an error lol
+		return nil, fmt.Errorf("Error: user info not found: %v", get_user_err.Error())
+	}
+
+	// Update attributes of userdata
+	userdata.Files_owned = updated_user_data.Files_owned
+	userdata.Invitation_list = updated_user_data.Invitation_list
+	userdata.Shared_files = updated_user_data.Shared_files
+
+	// Derive file uuid
+	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username + "0"))[:16])
+	if file_uuid_err != nil {
+		return nil, file_uuid_err
+	}
+
+	// First, check datastore if given user's filename exists
+	encrypted_file_tagged, file_exists_in_datastore := userlib.DatastoreGet(file_uuid)
+	if !file_exists_in_datastore { // If user is not found in datastore
+		return nil, fmt.Errorf("File doesn't exist in datastore:")
+	}
+	var se_key_file []byte
+	var hmac_key_file []byte
+
+	// Then, check if user owns the file
+	if file_keys, user_owns_file := userdata.Files_owned[file_uuid]; user_owns_file { // if the user owns the file
+		//obtain file keys from Files_owned map
+		se_key_file = file_keys[0]
+		hmac_key_file = file_keys[1]
+
+	} else { //The file is shared with the user (user does not own the file), and the user will have to access the file via invitation
+		// To do: Obtain sender Shared_files, then update invitation (incase of revoked user)
+		// Then access file through invitation information
+		invitation_uuid, parse_err := uuid.Parse(userdata.Shared_files[filename][1]) //Note: uuid in this case stored as a string
+		if parse_err != nil {
+			return nil, fmt.Errorf("Error parsing uuid: %v", parse_err)
+		}
+		sender := userdata.Shared_files[filename][0]
+
+		// When calling acceptInvitation to update the invitation, in this case, if the filename already exists in the user's files_shared namespace, don't error
+		// This makes the same invitation_uuid point to the UPDATED invitation with updated keys
+		userdata.AcceptInvitation(sender, invitation_uuid, filename)
+
+		// Obtain invitation: The last 256 bytes of the encrypted marshaled invitation will be the DS
+		signed_encrypted_invitation, ok := userlib.DatastoreGet(invitation_uuid)
+		if !ok {
+			return nil, fmt.Errorf("Error obtaining invitation from datastore")
+		}
+		encrypted_invitation := signed_encrypted_invitation[0 : len(signed_encrypted_invitation)-256]
+		ds_signature := signed_encrypted_invitation[len(signed_encrypted_invitation)-256:]
+
+		// verify invitation
+		// DS signature will be at the end of the encrypted marshaled invitation
+		sender_public_ds_key, ok := userlib.KeystoreGet(string(userlib.Hash([]byte(sender + "1"))))
+		if !ok {
+			return nil, fmt.Errorf("Error obtaining public ds key from keystore")
+		}
+		ds_verify_err := userlib.DSVerify(sender_public_ds_key, encrypted_invitation, ds_signature)
+		if ds_verify_err != nil {
+			return nil, fmt.Errorf("Warning: Invitation has been tampered with! %v", ds_verify_err)
+		}
+
+		// Decrypt invitation
+		marshaled_invitation, pke_err := userlib.PKEDec(userdata.PKE_Private, encrypted_invitation)
+		if pke_err != nil {
+			return nil, fmt.Errorf("Error: Failed to decrypt invitation %v", pke_err)
+		}
+
+		// Unmarshal invitation
+		var invitation Invitation //User struct to be returned
+		if unmarshal_err := json.Unmarshal(marshaled_invitation, &invitation); unmarshal_err != nil {
+			return nil, fmt.Errorf("Error unmarshaling invitation struct: %v", unmarshal_err)
+		}
+
+		// Use SE_Key_Invitation and HMAC_Key_Invitation to verify and decrypt FileKeys struct
+		encrypted_file_keys_tagged, ok_file_keys := userlib.DatastoreGet(invitation.FileKeysUUID)
+		if !ok_file_keys {
+			return nil, fmt.Errorf("Error obtaining file keys from datastore")
+		}
+		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-64]
+		attatched_hmac_tag_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-64:]
+
+		computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(hmac_key_file, encrypted_file_keys)
+		_ = computed_hmac_error
+
+		if !(userlib.HMACEqual(attatched_hmac_tag_file_keys, computed_hmac_tag_file_keys)) {
+			return nil, fmt.Errorf("Warning: File keys have been tampered with!")
+		}
+
+		file_keys_decrypted := userlib.SymDec(invitation.SE_Key_File_Keys, encrypted_file_keys)
+		var file_keys_struct FileKeys // FileKeys to be unmarshaled
+		if unmarshal_file_keys_err := json.Unmarshal(file_keys_decrypted, &file_keys_struct); unmarshal_file_keys_err != nil {
+			return nil, fmt.Errorf("Error unmarshaling file keys: %v", unmarshal_file_keys_err)
+		}
+
+		se_key_file = file_keys_struct.SE_Key_File
+		hmac_key_file = file_keys_struct.HMAC_Key_File
+	}
+
+	// Seperate file and hmac from combined tagged file
+	encrypted_file := encrypted_file_tagged[0 : len(encrypted_file_tagged)-64]
+	attatched_hmac_tag_file := encrypted_file_tagged[len(encrypted_file_tagged)-64:]
+
+	// Verify HMAC of the file
+	computed_hmac_tag_file, computed_hmac_error := userlib.HMACEval(hmac_key_file, encrypted_file)
+	_ = computed_hmac_error
+
+	if !(userlib.HMACEqual(attatched_hmac_tag_file, computed_hmac_tag_file)) {
+		return nil, fmt.Errorf("Warning: File header has been tampered with!")
+	}
+
+	// Decrypt and unmarshal file header
+	file_decrypted := userlib.SymDec(se_key_file, encrypted_file)
+	var file FileHeader // File header to be unmarshaled
+	if unmarshal_header_err := json.Unmarshal(file_decrypted, &file); unmarshal_header_err != nil {
+		return nil, fmt.Errorf("Error unmarshaling file header: %v", unmarshal_header_err)
+	}
+
+	// Verify and decryt each page in the header
+	var accumulated_content []byte
+	for i := 0; i < len(file.Page_list); i++ {
+		encrypted_page_tagged, ok := userlib.DatastoreGet(file.Page_list[i])
+		if !ok {
+			return nil, fmt.Errorf("Page does not exist in datastore")
+		}
+
+		// Seperate page and hmac from combined tagged file
+		encrypted_page := encrypted_page_tagged[0 : len(encrypted_page_tagged)-64]
+		attatched_hmac_tag_page := encrypted_page_tagged[len(encrypted_page_tagged)-64:]
+
+		// Verify HMAC of the file
+		computed_hmac_tag_page, computed_hmac_error := userlib.HMACEval(file.HMAC_key_page, encrypted_page)
+		_ = computed_hmac_error
+
+		if !(userlib.HMACEqual(attatched_hmac_tag_page, computed_hmac_tag_page)) {
+			return nil, fmt.Errorf("Warning: File page has been tampered with!")
+		}
+
+		// Decrypt and unmarshal page
+		page_decrypted := userlib.SymDec(file.SE_key_page, encrypted_page)
+		var page Page // File header to be unmarshaled
+		if unmarshal_header_err := json.Unmarshal(page_decrypted, &page); unmarshal_header_err != nil {
+			return nil, fmt.Errorf("Error unmarshaling file page: %v", unmarshal_header_err)
+		}
+
+		// Add page content to accumulated content
+		accumulated_content = append(accumulated_content, page.Text...)
+	}
+
+	// return all content
+	return accumulated_content, nil
 }
 
 func (userdata *User) AppendToFile(filename string, content []byte) error {
 	return nil
-}
-
-func (userdata *User) LoadFile(filename string) (content []byte, err error) {
-	storageKey, err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
-	if err != nil {
-		return nil, err
-	}
-	dataJSON, ok := userlib.DatastoreGet(storageKey)
-	if !ok {
-		return nil, errors.New(strings.ToTitle("file not found"))
-	}
-	err = json.Unmarshal(dataJSON, &content)
-	return content, err
 }
 
 func (userdata *User) CreateInvitation(filename string, recipientUsername string) (
