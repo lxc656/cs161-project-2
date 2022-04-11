@@ -132,7 +132,7 @@ type FileKeys struct {
 	HMAC_Key_File []byte
 }
 
-//function for generating a new random uuid that has not been taken yet
+//function for generating a new random uuid that has not been taken yet (uuid collision prevention)
 func generate_new_uuid() (random_uuid uuid.UUID) {
 	new_uuid := uuid.New()
 	item, ok := userlib.DatastoreGet(new_uuid)
@@ -227,7 +227,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	}
 	user_struct, ok := userlib.DatastoreGet(user_uuid)
 	if !ok { // If user is not found in datastore
-		return nil, fmt.Errorf("User doesn't exist in datastore:")
+		return nil, fmt.Errorf("While GetUser, User doesn't exist in datastore:")
 	}
 	//Obtain keys determistically from provided username and password
 	SE_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(username+"0")), 16)
@@ -269,7 +269,7 @@ func UpdateUserDataInDatastore(username string, password string, updated_user_da
 	}
 	user_struct, ok := userlib.DatastoreGet(user_uuid)
 	if !ok { // If user is not found in datastore
-		return fmt.Errorf("User doesn't exist in datastore")
+		return fmt.Errorf("While updating user, user doesn't exist in datastore")
 	}
 	//Obtain keys determistically from provided username and password
 	SE_Key_User := userlib.Argon2Key(userlib.Hash([]byte(password)), userlib.Hash([]byte(username+"0")), 16)
@@ -413,7 +413,7 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	encrypted_file_header_tagged := append(encrypted_file_header, hmac_tag_file...)
 
 	//Generate file uuid
-	file_header_uuid, file_header_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username + "0"))[:16])
+	file_header_uuid, file_header_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
 	if file_header_uuid_err != nil {
 		return file_header_uuid_err
 	}
@@ -443,7 +443,7 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 	userdata.Shared_files = updated_user_data.Shared_files
 
 	// Derive file uuid
-	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username + "0"))[:16])
+	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
 	if file_uuid_err != nil {
 		return nil, file_uuid_err
 	}
@@ -598,7 +598,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 	userdata.Shared_files = updated_user_data.Shared_files
 
 	// Derive file uuid from filename and username
-	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username + "0"))[:16])
+	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
 	if file_uuid_err != nil {
 		return file_uuid_err
 	}
@@ -815,10 +815,126 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	userdata.Invitation_list = updated_user_data.Invitation_list
 	userdata.Shared_files = updated_user_data.Shared_files
 
-	var file_uuid uuid.UUID
+	// Derive uuid for file to share
+	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+	if file_uuid_err != nil {
+		return null_uuid, file_uuid_err
+	}
 
-	// First, che
-	return
+	// First, check datastore if given user's filename exists
+	encrypted_file_tagged, file_exists_in_datastore := userlib.DatastoreGet(file_uuid)
+	if !file_exists_in_datastore { // If user is not found in datastore
+		return null_uuid, fmt.Errorf("File doesn't exist in datastore:")
+	}
+	_ = encrypted_file_tagged
+
+	var se_key_file []byte
+	var hmac_key_file []byte
+
+	// Then, check if user owns the file
+	if file_keys, user_owns_file := userdata.Files_owned[file_uuid]; user_owns_file { // if the user owns the file
+		// Obtain file keys from Files_owned map
+		se_key_file = file_keys[0]
+		hmac_key_file = file_keys[1]
+
+	} else { // If the user doesn't own the file they want to share
+
+	}
+
+	// Generate UUID for FileKeys
+	file_keys_uuid := generate_new_uuid()
+
+	// Create FileKeys struct
+	file_keys := FileKeys{
+		SE_Key_File:   se_key_file,
+		HMAC_Key_File: hmac_key_file,
+	}
+
+	// Marshal File_Keys
+	file_keys_marshaled, file_marshal_err := json.Marshal(file_keys)
+	if file_marshal_err != nil {
+		return null_uuid, file_marshal_err
+	}
+
+	//Encrypt file
+	se_key_file_keys := userlib.RandomBytes(16)
+	encrypted_file_keys := userlib.SymEnc(se_key_file_keys, userlib.RandomBytes(16), file_keys_marshaled)
+
+	//Generate HMAC tag for file
+	hmac_key_file_keys := userlib.RandomBytes(16)
+	hmac_tag_file_keys, hmac_error := userlib.HMACEval(hmac_key_file_keys, encrypted_file_keys)
+	_ = hmac_error
+
+	// Append hmac_tag_file behind file header
+	encrypted_file_keys_tagged := append(encrypted_file_keys, hmac_tag_file_keys...)
+
+	//Store file keys in datastore
+	userlib.DatastoreSet(file_keys_uuid, encrypted_file_keys_tagged)
+
+	// Create actual invitation struct
+	invitation := Invitation{
+		FileUUID:           file_uuid,
+		Sender:             userdata.Username,
+		Recipient:          recipientUsername,
+		SE_Key_File_Keys:   se_key_file_keys,
+		HMAC_Key_File_Keys: hmac_key_file_keys,
+		FileKeysUUID:       file_keys_uuid,
+	}
+
+	// Marshal invitation struct
+	invitation_marshaled, invitation_marshal_err := json.Marshal(invitation)
+	if invitation_marshal_err != nil {
+		return null_uuid, invitation_marshal_err
+	}
+
+	// Encrypt invitation with recipient's public PKE key
+
+	// Obtain recipient's public key
+	recipient_public_pke_key, recipient_public_key_exists := userlib.KeystoreGet(string(userlib.Hash([]byte(recipientUsername + "0"))))
+	if !recipient_public_key_exists {
+		return null_uuid, fmt.Errorf("Error: recipient's public key could not be located")
+	}
+
+	// Encrypt with recipient's public key
+	// NOTE: Maximum RSA plaintext size: 126 bytes (idea: divide invitation into 3 parts)
+	fmt.Println("DEBUG: marshaled invitation length:", len(invitation_marshaled))
+	invitation_encrypted, pke_encryption_error := userlib.PKEEnc(recipient_public_pke_key, invitation_marshaled)
+	if pke_encryption_error != nil {
+		return null_uuid, fmt.Errorf("PKE encryption error: %v", pke_encryption_error)
+	}
+
+	// Sign with user's private DS key
+	ds_signature, signature_err := userlib.DSSign(userdata.DS_Private, invitation_encrypted)
+	if signature_err != nil {
+		return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
+	}
+
+	// Append signature to encrypted invitation
+	invitation_encrypted_signed := append(invitation_encrypted, ds_signature...)
+
+	// Generate Invitation uuid
+	invitation_uuid := generate_new_uuid()
+
+	// Store secured information in datastore
+	userlib.DatastoreSet(invitation_uuid, invitation_encrypted_signed)
+
+	// Update user's InvitationList map
+
+	// Check if particular file has already been shared
+	if inv_uuid_list, user_has_shared_file_already := userdata.Invitation_list[file_uuid]; user_has_shared_file_already {
+		//append to file's shared recipients list
+		_ = inv_uuid_list
+		userdata.Invitation_list[file_uuid] = append(userdata.Invitation_list[file_uuid], invitation_uuid)
+	} else {
+		//create new list for file
+		userdata.Invitation_list[file_uuid] = make([]uuid.UUID, 0)
+	}
+	update_user_error := UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
+	if update_user_error != nil {
+		return null_uuid, fmt.Errorf("Error updating user's files owned map: %v", update_user_error)
+	}
+
+	return invitation_uuid, nil
 }
 
 func (userdata *User) RevokeAccess(filename string, recipientUsername string) error {
@@ -841,6 +957,12 @@ func main() {
 	if laptop_err != nil {
 		panic(laptop_err)
 	}
+
+	bob, bob_err := InitUser("bob", "123")
+	if bob_err != nil {
+		panic(bob_err)
+	}
+	_ = bob
 
 	_ = aliceLaptop
 	test_file := []byte("Hello World this is a test file!")
@@ -872,4 +994,30 @@ func main() {
 		panic(load_file_err)
 	}
 	fmt.Println(string(appended_file))
+
+	//Test PKE_Encryption
+	plaintext := make([]byte, 0)
+	for i := 0; i < 127; i++ {
+		plaintext = append(plaintext, 'a')
+	}
+
+	fmt.Println("Testing rsa encryption")
+	public_pke_key, recipient_public_key_exists := userlib.KeystoreGet(string(userlib.Hash([]byte("bob" + "0"))))
+	if !recipient_public_key_exists {
+		panic("Error: recipient's public key could not be located")
+	}
+	text_encrypted, pke_encryption_error := userlib.PKEEnc(public_pke_key, plaintext)
+	if pke_encryption_error != nil {
+		panic(pke_encryption_error)
+	}
+	fmt.Println("Encrypted text:", text_encrypted)
+
+	//Test Create invitation
+	invitation_uuid, inv_err := alice.CreateInvitation("test_file.txt", "bob")
+	if inv_err != nil {
+		panic(inv_err)
+	}
+
+	fmt.Println(invitation_uuid)
+
 }
