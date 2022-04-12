@@ -1076,8 +1076,178 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 }
 
 func (userdata *User) RevokeAccess(filename string, recipientUsername string) error {
-	// Overview: For a file and username, revoke access by deleting invitation of owner ---> username, then generate new keys
-	// for file, then CreateInvitation for all users not revoked
+	updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
+	if get_user_err != nil { // If somehow the user isn't in datastore, definitely an error lol
+		return fmt.Errorf("Error: user info not found: %v", get_user_err.Error())
+	}
+
+	// Update attributes of userdata
+	//key: file uuid, value: [SE_Key_File, HMAC_Key_File]
+	userdata.Files_owned = updated_user_data.Files_owned
+	userdata.Invitation_list = updated_user_data.Invitation_list
+	userdata.Shared_files = updated_user_data.Shared_files
+
+	//Check if file is owned by the user. If not we can't revoke
+	val, ok := userdata.Files_owned[filename]
+	if !ok{
+		return fmt.Errorf("The given filename does not exist in the caller’s personal file namespace.")
+	}
+	//Get the file_uuid of file
+	attempted_file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+	//If it errors, file is not user's
+	if file_uuid_err != nil {
+		return fmt.Errorf("Error: File cannot be found")
+	}
+	//Retrieve list of invitations sent out from this file
+	list_val, ok := userdata.Invitation_list[attempted_file_uuid]
+	if !ok{
+		return fmt.Errorf("File is not shared with anyone")
+	}
+	var recipient_shared bool = false
+	for _, element := range list_val{
+		// element is the element from someSlice for where we are
+		unpacked_invitation = UnpackInvitation(element, userdata.username)
+		if unpacked_invitation.recipient == recipientUsername{
+			recipient_shared = true
+		}
+	}
+	if recipient_shared == false{
+		return fmt.Errorf("File is not shared with the recipient")
+	}
+
+
+	var se_key_file []byte
+	var hmac_key_file []byte
+	var invitation_to_send Invitation
+	// Then, check if user owns the file
+	if file_keys, user_owns_file := userdata.Files_owned[attempted_file_uuid]; user_owns_file { // if the user owns the file
+
+		//Might not need this segment (since if it exists in user hashmap, it SHOULD be un datastore)
+		// First, check datastore if given user's filename exists
+		encrypted_file_tagged, file_exists_in_datastore := userlib.DatastoreGet(attempted_file_uuid)
+		if !file_exists_in_datastore { // If user is not found in datastore
+			return null_uuid, fmt.Errorf("File doesn't exist in datastore:")
+		}
+		_ = encrypted_file_tagged
+
+		//obtain file keys from Files_owned map
+		se_key_file = file_keys[0]
+		hmac_key_file = file_keys[1]
+
+		// Generate UUID for FileKeys
+		file_keys_uuid := generate_new_uuid()
+
+		// Create FileKeys struct
+		file_keys := FileKeys{
+			SE_Key_File:   se_key_file,
+			HMAC_Key_File: hmac_key_file,
+		}
+
+		// Marshal File_Keys
+		file_keys_marshaled, file_marshal_err := json.Marshal(file_keys)
+		if file_marshal_err != nil {
+			return null_uuid, file_marshal_err
+		}
+
+		//Encrypt file keys
+		se_key_file_keys := userlib.RandomBytes(16)
+		encrypted_file_keys := userlib.SymEnc(se_key_file_keys, userlib.RandomBytes(16), file_keys_marshaled)
+
+		//Generate HMAC tag for file keys
+		hmac_key_file_keys := userlib.RandomBytes(16)
+		hmac_tag_file_keys, hmac_error := userlib.HMACEval(hmac_key_file_keys, encrypted_file_keys)
+		_ = hmac_error
+
+		// Append hmac_tag_file_keys behind file_keys
+		encrypted_file_keys_tagged := append(encrypted_file_keys, hmac_tag_file_keys...)
+
+		//Store file keys in datastore
+		userlib.DatastoreSet(file_keys_uuid, encrypted_file_keys_tagged)
+	}
+	for _, element := range list_val{
+		// element is the element from someSlice for where we are
+		unpacked_invitation = UnpackInvitation(element, userdata.username)
+		if unpacked_invitation.recipient != recipientUsername{
+			unpacked_invitation.SE_Key_File_Keys = se_key_file_keys
+			unpacked_invitation.HMAC_Key_File_Keys = hmac_tag_file_keys
+			unpacked_invitation.FileKeysUUID = file_keys_uuid
+
+			invitation_marshaled, invitation_marshal_err := json.Marshal(unpacked_invitation)
+			if invitation_marshal_err != nil {
+				return null_uuid, invitation_marshal_err
+			}
+
+			// Obtain recipient's public key
+			recipient_public_pke_key, recipient_public_key_exists := userlib.KeystoreGet(string(userlib.Hash([]byte(recipientUsername + "0"))))
+			if !recipient_public_key_exists {
+				return null_uuid, fmt.Errorf("Error: recipient's public key could not be located")
+			}
+
+			var invitation_uuid_list []uuid.UUID
+
+			// Split invitation into chunks of 126 or less bytes
+			for i := 0; i < len(invitation_marshaled); i++ {
+				if i%126 == 0 {
+					var new_invitation_segment []byte
+					if i+126 <= len(invitation_marshaled) {
+						new_invitation_segment = invitation_marshaled[i : i+126]
+					} else {
+						new_invitation_segment = invitation_marshaled[i:]
+					}
+
+					// For each item in invitations_marshaled_list, encrypt and sign
+
+					// Encrypt invitation segments with recipient's public PKE key
+					// Encrypt
+					invitation_segment_encrypted, pke_encryption_error := userlib.PKEEnc(recipient_public_pke_key, new_invitation_segment)
+					if pke_encryption_error != nil {
+						return null_uuid, fmt.Errorf("PKE encryption error: %v", pke_encryption_error)
+					}
+
+					// Sign
+					ds_signature, signature_err := userlib.DSSign(userdata.DS_Private, invitation_segment_encrypted)
+					if signature_err != nil {
+						return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
+					}
+
+					// Append signature to encrypted invitation segment
+					invitation_segment_encrypted_signed := append(invitation_segment_encrypted, ds_signature...)
+
+					// Generate Invitation segment uuid
+					invitation_segment_uuid := generate_new_uuid()
+
+					// Store secured information in datastore
+					userlib.DatastoreSet(invitation_segment_uuid, invitation_segment_encrypted_signed)
+
+					invitation_uuid_list = append(invitation_uuid_list, invitation_segment_uuid)
+				}
+			}
+
+			//Store list of invitation uuids in datastore under single uuid
+			var inv_uuids_marshaled []byte
+			inv_uuids_marshaled, inv_uuids_marshal_err := json.Marshal(invitation_uuid_list)
+			if inv_uuids_marshal_err != nil {
+				return null_uuid, fmt.Errorf("Error marshaling uuid pair: %v", inv_uuids_marshal_err)
+			}
+			combined_inv_uuid := element
+
+			// Sign combined uuid
+			ds_signature_combined_inv_uuid, signature_err := userlib.DSSign(userdata.DS_Private, inv_uuids_marshaled)
+			if signature_err != nil {
+				return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
+			}
+
+			// Append signature to encrypted invitation
+			inv_uuids_marshaled_signed := append(inv_uuids_marshaled, ds_signature_combined_inv_uuid...)
+
+			userlib.DatastoreSet(combined_inv_uuid, inv_uuids_marshaled_signed)
+	
+		}
+	}
+	update_user_error := UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
+	if update_user_error != nil {
+		return null_uuid, fmt.Errorf("Error updating user's files owned map: %v", update_user_error)
+	}
 	return nil
 }
 func (userdata *User) ChangeUsername(new_username string) {
