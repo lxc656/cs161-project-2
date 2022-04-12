@@ -176,16 +176,11 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 			return nil, fmt.Errorf("Error generating DS key: %v", err_ds_keygen)
 		}
 
-		fmt.Println("DEBUG: ds public key generated: ", ds_verify_key)
-
 		keystore_set_err_ds := userlib.KeystoreSet(string(userlib.Hash([]byte(username+"1"))), ds_verify_key)
 		if keystore_set_err_ds != nil {
 			return nil, fmt.Errorf("While initializing user, error storing %v public ds in keystore", username)
 		}
 
-		ds_test, e := userlib.KeystoreGet(string(userlib.Hash([]byte(username + "1"))))
-		_ = e
-		fmt.Println("DEBUG: ds public key in keystore: ", ds_test)
 		new_user := User{
 			Username:        username,
 			Password:        password,
@@ -308,6 +303,7 @@ func UpdateUserDataInDatastore(username string, password string, updated_user_da
 		return fmt.Errorf("Error unmarshaling user struct: %v", unmarshal_err)
 	}
 
+	// Update attributes
 	user.Files_owned = updated_user_data.Files_owned
 	user.Invitation_list = updated_user_data.Invitation_list
 	user.Shared_files = updated_user_data.Shared_files
@@ -490,7 +486,7 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 
 		// When calling acceptInvitation to update the invitation, in this case, if the filename already exists in the user's files_shared namespace, don't error
 		// This makes the same invitation_uuid point to the UPDATED invitation with updated keys
-		userdata.AcceptInvitation(sender, combined_inv_uuid, filename)
+		//userdata.AcceptInvitation(sender, combined_inv_uuid, filename)
 
 		invitation, unpack_invitation_err := userdata.UnpackInvitation(combined_inv_uuid, sender)
 		if unpack_invitation_err != nil {
@@ -504,11 +500,11 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-64]
 		attatched_hmac_tag_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-64:]
 
-		computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(hmac_key_file, encrypted_file_keys)
+		computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(invitation.HMAC_Key_File_Keys, encrypted_file_keys)
 		_ = computed_hmac_error
 
 		if !(userlib.HMACEqual(attatched_hmac_tag_file_keys, computed_hmac_tag_file_keys)) {
-			return nil, fmt.Errorf("Warning: File keys have been tampered with!")
+			return nil, fmt.Errorf("Warning: File keys have been tampered with (occured during LoadFile)!")
 		}
 
 		file_keys_decrypted := userlib.SymDec(invitation.SE_Key_File_Keys, encrypted_file_keys)
@@ -642,7 +638,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-64]
 		attatched_hmac_tag_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-64:]
 
-		computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(hmac_key_file, encrypted_file_keys)
+		computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(invitation.HMAC_Key_File_Keys, encrypted_file_keys)
 		_ = computed_hmac_error
 
 		if !(userlib.HMACEqual(attatched_hmac_tag_file_keys, computed_hmac_tag_file_keys)) {
@@ -712,7 +708,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 
 	// Append until latest page fills up
 	i := 0
-	for len(latest_page.Text) <= 256 {
+	for len(latest_page.Text) <= 256 && i < len(content) {
 		latest_page.Text = append(latest_page.Text, content[i])
 		i++
 	}
@@ -795,8 +791,7 @@ func (userdata *User) UnpackInvitation(combined_inv_uuid uuid.UUID, sender_usern
 	combined_inv_marshaled := combined_inv_signed[0 : len(combined_inv_signed)-256]
 	ds_signature_combined_inv := combined_inv_signed[len(combined_inv_signed)-256:]
 	sender_public_ds_key, ok := userlib.KeystoreGet(string(userlib.Hash([]byte(sender_username + "1"))))
-	fmt.Println("sender: ", sender_username)
-	fmt.Println("sender's public ds key", sender_public_ds_key)
+
 	if !ok {
 		return null_invitation, fmt.Errorf("While unpacking invitation, Error obtaining public ds key from keystore")
 	}
@@ -946,7 +941,7 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 
 		// When calling acceptInvitation to update the invitation, in this case, if the filename already exists in the user's files_shared namespace, don't error
 		// This makes the same invitation_uuid point to the UPDATED invitation with updated keys
-		userdata.AcceptInvitation(sender, combined_inv_uuid, filename)
+		//userdata.AcceptInvitation(sender, combined_inv_uuid, filename)
 
 		// Take combined_inv_uuid and return entire decrypted invitation struct
 		recieved_invitation, unpack_inv_err := userdata.UnpackInvitation(combined_inv_uuid, sender)
@@ -1068,30 +1063,16 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	userdata.Invitation_list = updated_user_data.Invitation_list
 	userdata.Shared_files = updated_user_data.Shared_files
 
-	attemped_file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
-	if val, ok := userdata.Files_owned[attempted_file_uuid]; ok {
-		return fmt.Errorf("Error: User in callerspace owns the file: %v", get_user_err.Error())
+	// Check if filename already exists in user's SharedFiles map
+	if map_info, user_has_file := userdata.Shared_files[filename]; user_has_file { // if the user already has the file
+		_ = map_info
+		return fmt.Errorf("While accepting invitation, filename is already taken")
 	}
+	// If the use doesn't have the file, load invitation for the first time
+	userdata.Shared_files[filename] = [2]string{senderUsername, invitationPtr.String()}
+	UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
 
-	if val, ok := userdata.Shared_files[filename]; ok {
-		return fmt.Errorf("Error: User in callerspace has access to the file: %v", get_user_err.Error())
-	}
-
-	invitation_marshaled, invitation_exists = userlib.DatastoreGet(invitationPtr)
-	if !invitation_exists {
-		return fmt.Errorf("Error: Invitation does not exist %v", get_user_err.Error())
-	}
-
-	UnpackInvitation(invitationPtr, senderUsername)
-	var a [2]string
-	a[0] = senderUsername
-	a[1] = invitationPtr.string()
-	userdata.Shared_files["filename"] = a
-	update_user_error := UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
-	if update_user_error != nil {
-		return fmt.Errorf("Error updating user's files owned map: %v", update_user_error)
-	}
-	return
+	return nil
 }
 
 func (userdata *User) RevokeAccess(filename string, recipientUsername string) error {
@@ -1141,16 +1122,15 @@ func main() {
 		to_append = append(to_append, []byte("0123456789")...)
 	}
 
-	append_file_err := aliceLaptop.AppendToFile("test_file.txt", to_append)
+	append_file_err := alice.AppendToFile("test_file.txt", to_append)
 	if append_file_err != nil {
 		panic(append_file_err)
 	}
-
-	appended_file, load_file_err := alice.LoadFile("test_file.txt")
+	appended_content, load_file_err := aliceLaptop.LoadFile("test_file.txt")
 	if load_file_err != nil {
 		panic(load_file_err)
 	}
-	fmt.Println(string(appended_file))
+	fmt.Println("After appending: ", string(appended_content))
 
 	//Test Create invitation
 	invitation_uuid, inv_err := alice.CreateInvitation("test_file.txt", "bob")
@@ -1158,15 +1138,17 @@ func main() {
 		panic(inv_err)
 	}
 
-	fmt.Println(invitation_uuid)
+	// Test accept invitation
 
-	// Test unpack invitation
-
-	unpacked_invitation, unpack_invitation_err := bob.UnpackInvitation(invitation_uuid, "esong200")
-	if unpack_invitation_err != nil {
-		panic(unpack_invitation_err)
+	accept_invitation_err := bob.AcceptInvitation(alice.Username, invitation_uuid, "bob_file")
+	if accept_invitation_err != nil {
+		panic(accept_invitation_err)
 	}
 
-	fmt.Println("unpacked invitation:", unpacked_invitation)
+	bob_file, load_file_err := bob.LoadFile("bob_file")
+	if load_file_err != nil {
+		panic(load_file_err)
+	}
+	fmt.Println("Bob's file:", string(bob_file))
 
 }
