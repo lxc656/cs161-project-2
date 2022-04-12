@@ -1241,7 +1241,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 			inv_uuids_marshaled_signed := append(inv_uuids_marshaled, ds_signature_combined_inv_uuid...)
 
 			userlib.DatastoreSet(combined_inv_uuid, inv_uuids_marshaled_signed)
-	
+
 		}
 	}
 	update_user_error := UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
