@@ -1076,6 +1076,8 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 }
 
 func (userdata *User) RevokeAccess(filename string, recipientUsername string) error {
+	// Overview: For a file and username, revoke access by deleting invitation of owner ---> username, then generate new keys
+	// for file, then CreateInvitation for all users not revoked
 	return nil
 }
 func (userdata *User) ChangeUsername(new_username string) {
@@ -1150,5 +1152,25 @@ func main() {
 		panic(load_file_err)
 	}
 	fmt.Println("Bob's file:", string(bob_file))
+
+	charles, init_user_err := InitUser("charles", "456")
+	if init_user_err != nil {
+		panic(init_user_err)
+	}
+
+	bob_invitation_uuid, inv_err := bob.CreateInvitation("bob_file", "charles")
+	if inv_err != nil {
+		panic(inv_err)
+	}
+
+	charles_accept_invite_err := charles.AcceptInvitation("bob", bob_invitation_uuid, "charles_file")
+	if charles_accept_invite_err != nil {
+		panic(charles_accept_invite_err)
+	}
+	charles_file, load_file_err := charles.LoadFile("charles_file")
+	if load_file_err != nil {
+		panic(load_file_err)
+	}
+	fmt.Println("Charles's file:", string(charles_file))
 
 }
