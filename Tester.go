@@ -88,8 +88,8 @@ type User struct {
 	//key: file uuid, value: [SE_Key_File, HMAC_Key_File]
 	Files_owned map[uuid.UUID][2][]byte
 
-	//key: file uuid, value: list of invitation ID pairs for each file
-	Invitation_list map[uuid.UUID][]uuid.UUID
+	//key: file uuid, value: list of (recipient, invitation uuid (as string)) pairs
+	Invitation_list map[uuid.UUID][][2]string
 
 	//key: filename under user's namespace, value: [sender, invitation uuid (as string)]
 	Shared_files map[string][2]string
@@ -131,6 +131,17 @@ type Invitation struct {
 type FileKeys struct {
 	SE_Key_File   []byte
 	HMAC_Key_File []byte
+}
+
+// function for removing an element from a list of strings while preserving order
+func remove_from_list(l [][2]string, item [2]string) (removed_list [][2]string) {
+	// Get index of element to remove
+	for i := 0; i < len(l); i++ {
+		if l[i] == item {
+			return append(l[:i], l[i+1:]...)
+		}
+	}
+	return l
 }
 
 //function for generating a new random uuid that has not been taken yet (uuid collision prevention)
@@ -188,7 +199,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 			PKE_Private:     pke_private,
 			DS_Private:      ds_sign_key,
 			Files_owned:     make(map[uuid.UUID][2][]byte),
-			Invitation_list: make(map[uuid.UUID][]uuid.UUID),
+			Invitation_list: make(map[uuid.UUID][][2]string),
 			Shared_files:    make(map[string][2]string),
 		}
 
@@ -438,7 +449,6 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	return
 }
 
-// Helper function
 // Idea: maybe create helper function to JUST get file keys, then use this helper function in loadfile and createinvitation
 func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 	// Before anything, CHECK FOR UPDATES IN DATASTORE (for multiple sessions, in case another session makes an update)
@@ -509,22 +519,7 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 		if ds_verify_err != nil {
 			return nil, fmt.Errorf("Warning: FileKeys has been tampered with! %v", ds_verify_err)
 		}
-		// Use SE_Key_Invitation and HMAC_Key_Invitation to verify and decrypt FileKeys struct
-		// encrypted_file_keys_tagged, ok_file_keys := userlib.DatastoreGet(invitation.FileKeysUUID)
-		// if !ok_file_keys {
-		// 	return nil, fmt.Errorf("Error obtaining file keys from datastore")
-		// }
-		// encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-64]
-		// attatched_hmac_tag_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-64:]
 
-		// computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(invitation.HMAC_Key_File_Keys, encrypted_file_keys)
-		// _ = computed_hmac_error
-
-		// if !(userlib.HMACEqual(attatched_hmac_tag_file_keys, computed_hmac_tag_file_keys)) {
-		// 	return nil, fmt.Errorf("Warning: File keys have been tampered with (occured during LoadFile)!")
-		// }
-
-		// Decrypt FileKeys to access keys to desired file
 		file_keys_decrypted := userlib.SymDec(invitation.SE_Key_File_Keys, encrypted_file_keys)
 		var file_keys_struct FileKeys // FileKeys to be unmarshaled
 		if unmarshal_file_keys_err := json.Unmarshal(file_keys_decrypted, &file_keys_struct); unmarshal_file_keys_err != nil {
@@ -892,6 +887,7 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	var se_key_file []byte
 	var hmac_key_file []byte
 	var invitation_to_send Invitation
+	var user_owns_file bool
 	// Then, check if user owns the file
 	if file_keys, user_owns_file := userdata.Files_owned[attempted_file_uuid]; user_owns_file { // if the user owns the file
 
@@ -1059,21 +1055,22 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 
 	userlib.DatastoreSet(combined_inv_uuid, inv_uuids_marshaled_signed)
 
-	// Update user's InvitationList map
+	// If the user own's the file, update user's InvitationList map
+	if user_owns_file {
+		// Check if particular file has already been shared
+		if inv_uuid_list, user_has_shared_file_already := userdata.Invitation_list[attempted_file_uuid]; user_has_shared_file_already {
+			//append to file's shared recipients list
+			_ = inv_uuid_list
+		} else {
+			//create new list for file
+			userdata.Invitation_list[attempted_file_uuid] = make([][2]string, 0)
+		}
+		userdata.Invitation_list[attempted_file_uuid] = append(userdata.Invitation_list[attempted_file_uuid], [2]string{recipientUsername, combined_inv_uuid.String()})
 
-	// Check if particular file has already been shared
-	if inv_uuid_list, user_has_shared_file_already := userdata.Invitation_list[attempted_file_uuid]; user_has_shared_file_already {
-		//append to file's shared recipients list
-		_ = inv_uuid_list
-	} else {
-		//create new list for file
-		userdata.Invitation_list[attempted_file_uuid] = make([]uuid.UUID, 0)
-	}
-	userdata.Invitation_list[attempted_file_uuid] = append(userdata.Invitation_list[attempted_file_uuid], combined_inv_uuid)
-
-	update_user_error := UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
-	if update_user_error != nil {
-		return null_uuid, fmt.Errorf("Error updating user's files owned map: %v", update_user_error)
+		update_user_error := UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
+		if update_user_error != nil {
+			return null_uuid, fmt.Errorf("Error updating user's files owned map: %v", update_user_error)
+		}
 	}
 
 	return combined_inv_uuid, nil
@@ -1118,44 +1115,159 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 	userdata.Invitation_list = updated_user_data.Invitation_list
 	userdata.Shared_files = updated_user_data.Shared_files
 
+	// Derive file uuid (will only work if user owns file)
+	file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+	if file_uuid_err != nil {
+		return file_uuid_err
+	}
 	//Check if file is owned by the user. If not we can't revoke
-	val, ok := userdata.Files_owned[filename]
+	val, ok := userdata.Files_owned[file_uuid]
 	if !ok {
 		return fmt.Errorf("The given filename does not exist in the caller’s personal file namespace.")
 	}
-	//Get the file_uuid of file
-	attempted_file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
-	//If it errors, file is not user's
-	if file_uuid_err != nil {
-		return fmt.Errorf("Error: File cannot be found")
-	}
-	//Retrieve list of invitations sent out from this file
-	list_val, ok := userdata.Invitation_list[attempted_file_uuid]
+	_ = val
+
+	//Retrieve list of invitations sent out for this file
+	invitation_list, ok := userdata.Invitation_list[file_uuid]
 	if !ok {
-		return fmt.Errorf("File is not shared with anyone")
+		return fmt.Errorf("Error: File has not been shared with anyone yet")
 	}
-	var recipient_shared bool = false
-	for _, element := range list_val {
+
+	// Check if user has shared with recipient
+	for _, info := range invitation_list {
 		// element is the element from someSlice for where we are
-		unpacked_invitation = UnpackInvitation(element, userdata.username)
-		if unpacked_invitation.recipient == recipientUsername {
-			recipient_shared = true
+		recipient := info[0]
+		// If we find the recipient we wish to revoke
+		if recipient == recipientUsername {
+			// Delete invitation to recipient in datastore
+			invitation_uuid_to_delete, parse_err := uuid.Parse(info[1])
+			if parse_err != nil {
+				return fmt.Errorf("While revoking access, error parsing uuid: %v", parse_err)
+			}
+
+			// Delete invitation from user's invitation list
+			userlib.DatastoreDelete(invitation_uuid_to_delete)
+			new_invitation_list := remove_from_list(invitation_list, [2]string{recipient, info[1]})
+			invitation_list = new_invitation_list
+			userdata.Invitation_list[file_uuid] = new_invitation_list
+			break
 		}
-	}
-	if recipient_shared == false {
+		//If the loop doesn't find the recipient to revoke, error
 		return fmt.Errorf("File is not shared with the recipient")
 	}
 
-	for _, element := range list_val {
+	// Change keys of file (decrypt and re-encrypt)
+
+	// Generate new file keys
+	new_se_key_file := userlib.RandomBytes(16)
+	new_hmac_key_file := userlib.RandomBytes(16)
+
+	// obtain and decrypt file
+
+	// Obtain old file keys
+	old_se_key_file := userdata.Files_owned[file_uuid][0]
+	old_hmac_key_file := userdata.Files_owned[file_uuid][1]
+
+	// After obtaining se and hmac keys, pull tagged file header from datastore
+	encrypted_file_tagged, file_exists_in_datastore := userlib.DatastoreGet(file_uuid)
+	if !file_exists_in_datastore { // If user is not found in datastore
+		return fmt.Errorf("RevokeAccess Error: File doesn't exist in datastore:")
+	}
+	// Seperate file and hmac from combined tagged file
+	encrypted_file := encrypted_file_tagged[0 : len(encrypted_file_tagged)-64]
+	attatched_hmac_tag_file := encrypted_file_tagged[len(encrypted_file_tagged)-64:]
+
+	// Verify HMAC of the file
+	computed_hmac_tag_file, computed_hmac_error := userlib.HMACEval(old_hmac_key_file, encrypted_file)
+	_ = computed_hmac_error
+
+	if !(userlib.HMACEqual(attatched_hmac_tag_file, computed_hmac_tag_file)) {
+		return fmt.Errorf("Revoke Access Warning: File header has been tampered with!")
+	}
+
+	// Decrypt and unmarshal file header
+	file_decrypted := userlib.SymDec(old_se_key_file, encrypted_file)
+
+	// Re-encrypt and hmac file with new keys
+	//Encrypt file
+	encrypted_file = userlib.SymEnc(new_se_key_file, userlib.RandomBytes(16), file_decrypted)
+
+	//Generate HMAC tag for file
+	new_hmac_tag_file, hmac_error := userlib.HMACEval(new_hmac_key_file, encrypted_file)
+	_ = hmac_error
+
+	// Append hmac_tag_file behind file header
+	encrypted_file_tagged = append(encrypted_file, new_hmac_tag_file...)
+
+	// Store this file at the same uuid
+	userlib.DatastoreSet(file_uuid, encrypted_file_tagged)
+
+	// For every recipient that the user doesn't want to revoke, access FileKeys of their invitation and modify and resign
+	// FileKeys struct
+	for _, element := range invitation_list {
 		// element is the element from someSlice for where we are
-		unpacked_invitation = UnpackInvitation(element, userdata.username)
-		if unpacked_invitation.recipient != recipientUsername {
-			userdata.Createinvitation(filename, unpacked_invitation.recipient)
+
+		// Obtain invitation struct
+		invitation_uuid, parse_err := uuid.Parse(element[1])
+		if parse_err != nil {
+			return fmt.Errorf("While revoking access, error parsing uuid: %v", parse_err)
 		}
+		unpacked_invitation, unpack_inv_err := userdata.UnpackInvitation(invitation_uuid, userdata.Username)
+		if unpack_inv_err != nil {
+			return fmt.Errorf("While revoking access, error unpacking invitation: %v", unpack_inv_err)
+		}
+
+		// Access and verify FileKeys struct
+		encrypted_file_keys_tagged, file_keys_struct_exists := userlib.DatastoreGet(unpacked_invitation.FileKeysUUID)
+		if !file_keys_struct_exists {
+			return fmt.Errorf("Error obtaining FileKeys from datastore")
+		}
+		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-256]
+		ds_signature_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-256:]
+		owner_public_ds_key, ok := userlib.KeystoreGet(string(userlib.Hash([]byte(userdata.Username + "1"))))
+		if !ok {
+			return fmt.Errorf("While revoking access, Error obtaining public ds key from keystore")
+		}
+		ds_verify_err := userlib.DSVerify(owner_public_ds_key, encrypted_file_keys, ds_signature_file_keys)
+		if ds_verify_err != nil {
+			return fmt.Errorf("Warning: FileKeys has been tampered with! %v", ds_verify_err)
+		}
+
+		file_keys_decrypted := userlib.SymDec(unpacked_invitation.SE_Key_File_Keys, encrypted_file_keys)
+		var file_keys_struct FileKeys // FileKeys to be unmarshaled
+		if unmarshal_file_keys_err := json.Unmarshal(file_keys_decrypted, &file_keys_struct); unmarshal_file_keys_err != nil {
+			return fmt.Errorf("Error unmarshaling file keys: %v", unmarshal_file_keys_err)
+		}
+
+		// Update keys in FileKeys struct
+		file_keys_struct.SE_Key_File = new_se_key_file
+		file_keys_struct.HMAC_Key_File = new_hmac_key_file
+
+		// Marshal, Sign and Re-encrypt FileKeys Struct
+
+		// Marshal File_Keys
+		file_keys_marshaled, file_marshal_err := json.Marshal(file_keys_struct)
+		if file_marshal_err != nil {
+			return file_marshal_err
+		}
+
+		//Encrypt file_keys
+		encrypted_file_keys = userlib.SymEnc(unpacked_invitation.SE_Key_File_Keys, userlib.RandomBytes(16), file_keys_marshaled)
+
+		// Since the user OWNS the file, user will sign the filekeys with their DS_private, append to the end of File_Keys
+		ds_signature_file_keys, signature_err := userlib.DSSign(userdata.DS_Private, encrypted_file_keys)
+		if signature_err != nil {
+			return fmt.Errorf("While revoking access, error creating digital signature: %v", signature_err)
+		}
+
+		// Append digital signature behind FileKeys
+		encrypted_file_keys_signed := append(encrypted_file_keys, ds_signature_file_keys...)
+
+		userlib.DatastoreSet(unpacked_invitation.FileKeysUUID, encrypted_file_keys_signed)
 	}
 	update_user_error := UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
 	if update_user_error != nil {
-		return null_uuid, fmt.Errorf("Error updating user's files owned map: %v", update_user_error)
+		return fmt.Errorf("Error updating user's invitation list map: %v", update_user_error)
 	}
 	return nil
 }
@@ -1219,6 +1331,11 @@ func main() {
 		panic(inv_err)
 	}
 
+	a_to_c_invitation_uuid, inv_err := alice.CreateInvitation("test_file.txt", "charles")
+	if inv_err != nil {
+		panic(inv_err)
+	}
+
 	// Test accept invitation
 
 	accept_invitation_err := bob.AcceptInvitation(alice.Username, invitation_uuid, "bob_file")
@@ -1237,12 +1354,7 @@ func main() {
 		panic(init_user_err)
 	}
 
-	bob_invitation_uuid, inv_err := bob.CreateInvitation("bob_file", "charles")
-	if inv_err != nil {
-		panic(inv_err)
-	}
-
-	charles_accept_invite_err := charles.AcceptInvitation("bob", bob_invitation_uuid, "charles_file")
+	charles_accept_invite_err := charles.AcceptInvitation("alice", a_to_c_invitation_uuid, "charles_file")
 	if charles_accept_invite_err != nil {
 		panic(charles_accept_invite_err)
 	}
