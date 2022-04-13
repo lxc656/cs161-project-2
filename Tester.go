@@ -493,21 +493,38 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 		if unpack_invitation_err != nil {
 			return nil, unpack_invitation_err
 		}
+
+		// Access and verify FileKeys struct
+		encrypted_file_keys_tagged, file_keys_struct_exists := userlib.DatastoreGet(invitation.FileKeysUUID)
+		if !file_keys_struct_exists {
+			return nil, fmt.Errorf("Error obtaining FileKeys from datastore")
+		}
+		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-256]
+		ds_signature_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-256:]
+		owner_public_ds_key, ok := userlib.KeystoreGet(string(userlib.Hash([]byte(invitation.Owner + "1"))))
+		if !ok {
+			return nil, fmt.Errorf("While unpacking invitation, Error obtaining public ds key from keystore")
+		}
+		ds_verify_err := userlib.DSVerify(owner_public_ds_key, encrypted_file_keys, ds_signature_file_keys)
+		if ds_verify_err != nil {
+			return nil, fmt.Errorf("Warning: FileKeys has been tampered with! %v", ds_verify_err)
+		}
 		// Use SE_Key_Invitation and HMAC_Key_Invitation to verify and decrypt FileKeys struct
-		encrypted_file_keys_tagged, ok_file_keys := userlib.DatastoreGet(invitation.FileKeysUUID)
-		if !ok_file_keys {
-			return nil, fmt.Errorf("Error obtaining file keys from datastore")
-		}
-		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-64]
-		attatched_hmac_tag_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-64:]
+		// encrypted_file_keys_tagged, ok_file_keys := userlib.DatastoreGet(invitation.FileKeysUUID)
+		// if !ok_file_keys {
+		// 	return nil, fmt.Errorf("Error obtaining file keys from datastore")
+		// }
+		// encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-64]
+		// attatched_hmac_tag_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-64:]
 
-		computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(invitation.HMAC_Key_File_Keys, encrypted_file_keys)
-		_ = computed_hmac_error
+		// computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(invitation.HMAC_Key_File_Keys, encrypted_file_keys)
+		// _ = computed_hmac_error
 
-		if !(userlib.HMACEqual(attatched_hmac_tag_file_keys, computed_hmac_tag_file_keys)) {
-			return nil, fmt.Errorf("Warning: File keys have been tampered with (occured during LoadFile)!")
-		}
+		// if !(userlib.HMACEqual(attatched_hmac_tag_file_keys, computed_hmac_tag_file_keys)) {
+		// 	return nil, fmt.Errorf("Warning: File keys have been tampered with (occured during LoadFile)!")
+		// }
 
+		// Decrypt FileKeys to access keys to desired file
 		file_keys_decrypted := userlib.SymDec(invitation.SE_Key_File_Keys, encrypted_file_keys)
 		var file_keys_struct FileKeys // FileKeys to be unmarshaled
 		if unmarshal_file_keys_err := json.Unmarshal(file_keys_decrypted, &file_keys_struct); unmarshal_file_keys_err != nil {
@@ -624,26 +641,27 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 
 		// When calling acceptInvitation to update the invitation, in this case, if the filename already exists in the user's files_shared namespace, don't error
 		// This makes the same invitation_uuid point to the UPDATED invitation with updated keys
-		userdata.AcceptInvitation(sender, combined_inv_uuid, filename)
+		// userdata.AcceptInvitation(sender, combined_inv_uuid, filename)
 
 		invitation, unpack_invitation_err := userdata.UnpackInvitation(combined_inv_uuid, sender)
 		if unpack_invitation_err != nil {
 			return unpack_invitation_err
 		}
 
-		// Use SE_Key_Invitation and HMAC_Key_Invitation to verify and decrypt FileKeys struct
-		encrypted_file_keys_tagged, ok_file_keys := userlib.DatastoreGet(invitation.FileKeysUUID)
-		if !ok_file_keys {
-			return fmt.Errorf("Error obtaining file keys from datastore")
+		// Access and verify FileKeys struct
+		encrypted_file_keys_tagged, file_keys_struct_exists := userlib.DatastoreGet(invitation.FileKeysUUID)
+		if !file_keys_struct_exists {
+			return fmt.Errorf("Error obtaining FileKeys from datastore")
 		}
-		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-64]
-		attatched_hmac_tag_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-64:]
-
-		computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(invitation.HMAC_Key_File_Keys, encrypted_file_keys)
-		_ = computed_hmac_error
-
-		if !(userlib.HMACEqual(attatched_hmac_tag_file_keys, computed_hmac_tag_file_keys)) {
-			return fmt.Errorf("Warning: File keys have been tampered with!")
+		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-256]
+		ds_signature_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-256:]
+		owner_public_ds_key, ok := userlib.KeystoreGet(string(userlib.Hash([]byte(invitation.Owner + "1"))))
+		if !ok {
+			return fmt.Errorf("While unpacking invitation, Error obtaining public ds key from keystore")
+		}
+		ds_verify_err := userlib.DSVerify(owner_public_ds_key, encrypted_file_keys, ds_signature_file_keys)
+		if ds_verify_err != nil {
+			return fmt.Errorf("Warning: FileKeys has been tampered with! %v", ds_verify_err)
 		}
 
 		file_keys_decrypted := userlib.SymDec(invitation.SE_Key_File_Keys, encrypted_file_keys)
@@ -1088,6 +1106,7 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 }
 
 func (userdata *User) RevokeAccess(filename string, recipientUsername string) error {
+	// Before anything, CHECK FOR UPDATES IN DATASTORE (for multiple sessions, in case another session makes an update)
 	updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
 	if get_user_err != nil { // If somehow the user isn't in datastore, definitely an error lol
 		return fmt.Errorf("Error: user info not found: %v", get_user_err.Error())

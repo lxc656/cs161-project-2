@@ -138,12 +138,13 @@ type Page struct {
 
 // Invitation structure used to access files the user does not own. Stored in datastore, encrypted with RSA.
 type Invitation struct {
-	FileUUID           uuid.UUID
-	Sender             string // Username of sender
-	Recipient          string
-	SE_Key_File_Keys   []byte
-	HMAC_Key_File_Keys []byte
-	FileKeysUUID       uuid.UUID
+	FileUUID         uuid.UUID
+	Owner            string
+	Sender           string // Username of sender
+	Recipient        string
+	SE_Key_File_Keys []byte
+	//HMAC_Key_File_Keys []byte
+	FileKeysUUID uuid.UUID
 }
 
 // File keys the invitation points to. Changed when a user is revoked from sharing permissions.
@@ -512,21 +513,38 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 		if unpack_invitation_err != nil {
 			return nil, unpack_invitation_err
 		}
+
+		// Access and verify FileKeys struct
+		encrypted_file_keys_tagged, file_keys_struct_exists := userlib.DatastoreGet(invitation.FileKeysUUID)
+		if !file_keys_struct_exists {
+			return nil, fmt.Errorf("Error obtaining FileKeys from datastore")
+		}
+		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-256]
+		ds_signature_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-256:]
+		owner_public_ds_key, ok := userlib.KeystoreGet(string(userlib.Hash([]byte(invitation.Owner + "1"))))
+		if !ok {
+			return nil, fmt.Errorf("While unpacking invitation, Error obtaining public ds key from keystore")
+		}
+		ds_verify_err := userlib.DSVerify(owner_public_ds_key, encrypted_file_keys, ds_signature_file_keys)
+		if ds_verify_err != nil {
+			return nil, fmt.Errorf("Warning: FileKeys has been tampered with! %v", ds_verify_err)
+		}
 		// Use SE_Key_Invitation and HMAC_Key_Invitation to verify and decrypt FileKeys struct
-		encrypted_file_keys_tagged, ok_file_keys := userlib.DatastoreGet(invitation.FileKeysUUID)
-		if !ok_file_keys {
-			return nil, fmt.Errorf("Error obtaining file keys from datastore")
-		}
-		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-64]
-		attatched_hmac_tag_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-64:]
+		// encrypted_file_keys_tagged, ok_file_keys := userlib.DatastoreGet(invitation.FileKeysUUID)
+		// if !ok_file_keys {
+		// 	return nil, fmt.Errorf("Error obtaining file keys from datastore")
+		// }
+		// encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-64]
+		// attatched_hmac_tag_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-64:]
 
-		computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(invitation.HMAC_Key_File_Keys, encrypted_file_keys)
-		_ = computed_hmac_error
+		// computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(invitation.HMAC_Key_File_Keys, encrypted_file_keys)
+		// _ = computed_hmac_error
 
-		if !(userlib.HMACEqual(attatched_hmac_tag_file_keys, computed_hmac_tag_file_keys)) {
-			return nil, fmt.Errorf("Warning: File keys have been tampered with (occured during LoadFile)!")
-		}
+		// if !(userlib.HMACEqual(attatched_hmac_tag_file_keys, computed_hmac_tag_file_keys)) {
+		// 	return nil, fmt.Errorf("Warning: File keys have been tampered with (occured during LoadFile)!")
+		// }
 
+		// Decrypt FileKeys to access keys to desired file
 		file_keys_decrypted := userlib.SymDec(invitation.SE_Key_File_Keys, encrypted_file_keys)
 		var file_keys_struct FileKeys // FileKeys to be unmarshaled
 		if unmarshal_file_keys_err := json.Unmarshal(file_keys_decrypted, &file_keys_struct); unmarshal_file_keys_err != nil {
@@ -643,26 +661,27 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 
 		// When calling acceptInvitation to update the invitation, in this case, if the filename already exists in the user's files_shared namespace, don't error
 		// This makes the same invitation_uuid point to the UPDATED invitation with updated keys
-		userdata.AcceptInvitation(sender, combined_inv_uuid, filename)
+		// userdata.AcceptInvitation(sender, combined_inv_uuid, filename)
 
 		invitation, unpack_invitation_err := userdata.UnpackInvitation(combined_inv_uuid, sender)
 		if unpack_invitation_err != nil {
 			return unpack_invitation_err
 		}
 
-		// Use SE_Key_Invitation and HMAC_Key_Invitation to verify and decrypt FileKeys struct
-		encrypted_file_keys_tagged, ok_file_keys := userlib.DatastoreGet(invitation.FileKeysUUID)
-		if !ok_file_keys {
-			return fmt.Errorf("Error obtaining file keys from datastore")
+		// Access and verify FileKeys struct
+		encrypted_file_keys_tagged, file_keys_struct_exists := userlib.DatastoreGet(invitation.FileKeysUUID)
+		if !file_keys_struct_exists {
+			return fmt.Errorf("Error obtaining FileKeys from datastore")
 		}
-		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-64]
-		attatched_hmac_tag_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-64:]
-
-		computed_hmac_tag_file_keys, computed_hmac_error := userlib.HMACEval(invitation.HMAC_Key_File_Keys, encrypted_file_keys)
-		_ = computed_hmac_error
-
-		if !(userlib.HMACEqual(attatched_hmac_tag_file_keys, computed_hmac_tag_file_keys)) {
-			return fmt.Errorf("Warning: File keys have been tampered with!")
+		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-256]
+		ds_signature_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-256:]
+		owner_public_ds_key, ok := userlib.KeystoreGet(string(userlib.Hash([]byte(invitation.Owner + "1"))))
+		if !ok {
+			return fmt.Errorf("While unpacking invitation, Error obtaining public ds key from keystore")
+		}
+		ds_verify_err := userlib.DSVerify(owner_public_ds_key, encrypted_file_keys, ds_signature_file_keys)
+		if ds_verify_err != nil {
+			return fmt.Errorf("Warning: FileKeys has been tampered with! %v", ds_verify_err)
 		}
 
 		file_keys_decrypted := userlib.SymDec(invitation.SE_Key_File_Keys, encrypted_file_keys)
@@ -927,25 +946,35 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		se_key_file_keys := userlib.RandomBytes(16)
 		encrypted_file_keys := userlib.SymEnc(se_key_file_keys, userlib.RandomBytes(16), file_keys_marshaled)
 
+		// Since the user OWNS the file, user will sign the filekeys with their DS_private, append to the end of File_Keys
+		ds_signature_file_keys, signature_err := userlib.DSSign(userdata.DS_Private, encrypted_file_keys)
+		if signature_err != nil {
+			return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
+		}
+
+		// Append digital signature behind FileKeys
+		encrypted_file_keys_signed := append(encrypted_file_keys, ds_signature_file_keys...)
+
 		//Generate HMAC tag for file keys
-		hmac_key_file_keys := userlib.RandomBytes(16)
-		hmac_tag_file_keys, hmac_error := userlib.HMACEval(hmac_key_file_keys, encrypted_file_keys)
-		_ = hmac_error
+		// hmac_key_file_keys := userlib.RandomBytes(16)
+		// hmac_tag_file_keys, hmac_error := userlib.HMACEval(hmac_key_file_keys, encrypted_file_keys)
+		// _ = hmac_error
 
 		// Append hmac_tag_file_keys behind file_keys
-		encrypted_file_keys_tagged := append(encrypted_file_keys, hmac_tag_file_keys...)
+		// encrypted_file_keys_tagged := append(encrypted_file_keys, hmac_tag_file_keys...)
 
 		//Store file keys in datastore
-		userlib.DatastoreSet(file_keys_uuid, encrypted_file_keys_tagged)
+		userlib.DatastoreSet(file_keys_uuid, encrypted_file_keys_signed)
 
 		// Create actual invitation struct to be sent
 		invitation_to_send = Invitation{
-			FileUUID:           attempted_file_uuid,
-			Sender:             userdata.Username,
-			Recipient:          recipientUsername,
-			SE_Key_File_Keys:   se_key_file_keys,
-			HMAC_Key_File_Keys: hmac_key_file_keys,
-			FileKeysUUID:       file_keys_uuid,
+			FileUUID:         attempted_file_uuid,
+			Owner:            userdata.Username,
+			Sender:           userdata.Username,
+			Recipient:        recipientUsername,
+			SE_Key_File_Keys: se_key_file_keys,
+			//HMAC_Key_File_Keys: hmac_key_file_keys,
+			FileKeysUUID: file_keys_uuid,
 		}
 
 	} else { // If the user doesn't own the file they want to share
@@ -969,12 +998,13 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 
 		// Create derived invitation from information in recieved information
 		invitation_to_send = Invitation{
-			FileUUID:           recieved_invitation.FileUUID,
-			Sender:             userdata.Username,
-			Recipient:          recipientUsername,
-			SE_Key_File_Keys:   recieved_invitation.SE_Key_File_Keys,
-			HMAC_Key_File_Keys: recieved_invitation.HMAC_Key_File_Keys,
-			FileKeysUUID:       recieved_invitation.FileKeysUUID,
+			FileUUID:         recieved_invitation.FileUUID,
+			Owner:            recieved_invitation.Owner,
+			Sender:           userdata.Username,
+			Recipient:        recipientUsername,
+			SE_Key_File_Keys: recieved_invitation.SE_Key_File_Keys,
+			//HMAC_Key_File_Keys: recieved_invitation.HMAC_Key_File_Keys,
+			FileKeysUUID: recieved_invitation.FileKeysUUID,
 		}
 	}
 
@@ -1096,5 +1126,55 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 }
 
 func (userdata *User) RevokeAccess(filename string, recipientUsername string) error {
+	// updated_user_data, get_user_err := GetUser(userdata.Username, userdata.Password)
+	// if get_user_err != nil { // If somehow the user isn't in datastore, definitely an error lol
+	// 	return fmt.Errorf("Error: user info not found: %v", get_user_err.Error())
+	// }
+
+	// // Update attributes of userdata
+	// //key: file uuid, value: [SE_Key_File, HMAC_Key_File]
+	// userdata.Files_owned = updated_user_data.Files_owned
+	// userdata.Invitation_list = updated_user_data.Invitation_list
+	// userdata.Shared_files = updated_user_data.Shared_files
+
+	// //Check if file is owned by the user. If not we can't revoke
+	// val, ok := userdata.Files_owned[filename]
+	// if !ok {
+	// 	return fmt.Errorf("The given filename does not exist in the caller’s personal file namespace.")
+	// }
+	// //Get the file_uuid of file
+	// attempted_file_uuid, file_uuid_err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+	// //If it errors, file is not user's
+	// if file_uuid_err != nil {
+	// 	return fmt.Errorf("Error: File cannot be found")
+	// }
+	// //Retrieve list of invitations sent out from this file
+	// list_val, ok := userdata.Invitation_list[attempted_file_uuid]
+	// if !ok {
+	// 	return fmt.Errorf("File is not shared with anyone")
+	// }
+	// var recipient_shared bool = false
+	// for _, element := range list_val {
+	// 	// element is the element from someSlice for where we are
+	// 	unpacked_invitation = UnpackInvitation(element, userdata.username)
+	// 	if unpacked_invitation.recipient == recipientUsername {
+	// 		recipient_shared = true
+	// 	}
+	// }
+	// if recipient_shared == false {
+	// 	return fmt.Errorf("File is not shared with the recipient")
+	// }
+
+	// for _, element := range list_val {
+	// 	// element is the element from someSlice for where we are
+	// 	unpacked_invitation = UnpackInvitation(element, userdata.username)
+	// 	if unpacked_invitation.recipient != recipientUsername {
+	// 		userdata.Createinvitation(filename, unpacked_invitation.recipient)
+	// 	}
+	// }
+	// update_user_error := UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
+	// if update_user_error != nil {
+	// 	return null_uuid, fmt.Errorf("Error updating user's files owned map: %v", update_user_error)
+	// }
 	return nil
 }
