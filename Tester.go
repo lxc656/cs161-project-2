@@ -497,11 +497,17 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 	} else { //The file is shared with the user (user does not own the file), and the user will have to access the file via invitation
 		// To do: Obtain sender Shared_files, then update invitation (incase of revoked user)
 		// Then access file through invitation information
+		if len(userdata.Shared_files[filename]) == 0 {
+			return nil, fmt.Errorf("Error: file does not exist in user's namespace")
+		}
+		fmt.Println("DEBUG: to parse:", userdata.Username, userdata.Shared_files[filename])
 		combined_inv_uuid, parse_err := uuid.Parse(userdata.Shared_files[filename][1]) //Note: uuid in this case stored as a string
 		if parse_err != nil {
 			return nil, fmt.Errorf("Error parsing uuid: %v", parse_err)
 		}
 		sender := userdata.Shared_files[filename][0]
+
+		fmt.Println("DEBUG: inv_uuid Charles:", combined_inv_uuid)
 
 		// When calling acceptInvitation to update the invitation, in this case, if the filename already exists in the user's files_shared namespace, don't error
 		// This makes the same invitation_uuid point to the UPDATED invitation with updated keys
@@ -1163,6 +1169,8 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 			invitation_uuid_to_delete := info.InvitationUUID
 
 			// Delete invitation from user's invitation list
+			fmt.Printf("DEBUG: deleting invitation uuid for %s", recipientUsername)
+			fmt.Println()
 			userlib.DatastoreDelete(invitation_uuid_to_delete)
 			struct_to_remove := InvitationListElements{
 				Recipient:        recipient,
@@ -1400,11 +1408,12 @@ func main() {
 
 	_ = after_revoke_file
 
-	charles_revoke_file, load_file_err := charles.LoadFile("charles_file.txt")
+	fmt.Println(charles.Shared_files)
+	bob_revoke_file, load_file_err := bob.LoadFile("bob_file")
 	if load_file_err != nil {
-		fmt.Println("charles_panic", load_file_err)
+		fmt.Println("bob_panic:", load_file_err)
 	}
 
-	fmt.Println(charles_revoke_file)
+	fmt.Println(string(bob_revoke_file))
 
 }

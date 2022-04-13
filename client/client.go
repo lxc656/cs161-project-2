@@ -517,6 +517,9 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 	} else { //The file is shared with the user (user does not own the file), and the user will have to access the file via invitation
 		// To do: Obtain sender Shared_files, then update invitation (incase of revoked user)
 		// Then access file through invitation information
+		if len(userdata.Shared_files[filename]) == 0 {
+			return nil, fmt.Errorf("Error: file does not exist in user's namespace")
+		}
 		combined_inv_uuid, parse_err := uuid.Parse(userdata.Shared_files[filename][1]) //Note: uuid in this case stored as a string
 		if parse_err != nil {
 			return nil, fmt.Errorf("Error parsing uuid: %v", parse_err)
@@ -539,6 +542,7 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 		}
 		encrypted_file_keys := encrypted_file_keys_tagged[0 : len(encrypted_file_keys_tagged)-256]
 		ds_signature_file_keys := encrypted_file_keys_tagged[len(encrypted_file_keys_tagged)-256:]
+
 		owner_public_ds_key, ok := userlib.KeystoreGet(string(userlib.Hash([]byte(invitation.Owner + "1"))))
 		if !ok {
 			return nil, fmt.Errorf("While unpacking invitation, Error obtaining public ds key from keystore")
@@ -1253,7 +1257,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		// element is the element from someSlice for where we are
 
 		// Access and verify FileKeys struct
-		se_key_file_keys := []byte(element.SE_Key_File_Keys)
+		se_key_file_keys := element.SE_Key_File_Keys
 		file_keys_uuid := element.FileKeysUUID
 		encrypted_file_keys_tagged, file_keys_struct_exists := userlib.DatastoreGet(file_keys_uuid)
 		if !file_keys_struct_exists {
