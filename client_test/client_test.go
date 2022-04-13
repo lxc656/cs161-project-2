@@ -244,4 +244,92 @@ var _ = Describe("Client Tests", func() {
 		})
 
 	})
+
+	Describe("Basic Tests", func() {
+
+		Specify("Basic Test: second instance modify.", func() {
+			userlib.DebugMsg("Initializing users Alice")
+			alice, err := client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Getting second instance of Alice - aliceLaptop")
+			aliceLaptop, err = client.GetUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			err = alice.StoreFile("alice.txt", []byte(contentOne))
+			Expect(err).To(BeNil())	
+
+			data, err := aliceLaptop.LoadFile("alice.txt")
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+
+		})
+
+
+		Specify("Basic Test: second instance appendToFile.", func() {
+			userlib.DebugMsg("Initializing users Alice")
+			alice, err := client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Getting second instance of Alice - aliceLaptop")
+			aliceLaptop, err = client.GetUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			err = alice.StoreFile("alice.txt", []byte(contentOne))
+			Expect(err).To(BeNil())	
+
+			err = aliceLaptop.AppendToFile("alice.txt", []byte("weaverweaver"))
+			Expect(err).To(BeNil())
+
+			data, err := alice.LoadFile("alice.txt")
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte("Bitcoin is Nick's favorite weaverweaver")))
+
+			
+
+		})
+
+
+		Specify("Basic Test: Testing GetUser with wrong password", func() {
+			userlib.DebugMsg("Initializing users Alice")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Getting second instance of Alice - aliceLaptop")
+			aliceLaptop, err = client.GetUser("alice", "wrongpassword")
+			Expect(err).ToNot(BeNil())
+		})
+
+		Specify("Basic Test: CreateInvitation on non_existant file", func() {
+			userlib.DebugMsg("Initializing users Alice, Bob, and Charlie.")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())	
+
+			invite, err := alice.CreateInvitation("aliceFile2", "bob")
+			_ = invite
+			Expect(err).ToNot(BeNil())
+
+
+
+
+
+
+		})
+
+	
+
+
+
+
+		
+
+	}) 
+
+
 })
