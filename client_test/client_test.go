@@ -255,6 +255,11 @@ var _ = Describe("Client Tests", func() {
 			bob, err = client.InitUser("alice", defaultPassword)
 			Expect(err).ToNot(BeNil())
 		})
+		Specify("Custom Test: Blank username", func() {
+			userlib.DebugMsg("Initializing blank username")
+			alice, err = client.InitUser("", defaultPassword)
+			Expect(err).ToNot(BeNil())
+		})
 		Specify("Custom Test: Testing Sharing a shared file.", func() {
 			userlib.DebugMsg("Initializing users Alice, Bob, and Charlie.")
 			alice, err = client.InitUser("alice", defaultPassword)
@@ -278,7 +283,8 @@ var _ = Describe("Client Tests", func() {
 
 		// 	alice.StoreFile("trash_file", []byte(contentOne)
 		// 	alice.AppendToFile("trash_file", []byte("weaverweaverweaver"))
-		// Ex
+		// 	alice_data = alice.LoadFile("trash_file")
+		// 	aliceLaptop_data = aliceLaptop.LoadFile("trash_file")
 
 		// })
 
