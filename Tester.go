@@ -1233,7 +1233,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		// element is the element from someSlice for where we are
 
 		// Access and verify FileKeys struct
-		se_key_file_keys := []byte(element.SE_Key_File_Keys)
+		se_key_file_keys := element.SE_Key_File_Keys
 		file_keys_uuid := element.FileKeysUUID
 		encrypted_file_keys_tagged, file_keys_struct_exists := userlib.DatastoreGet(file_keys_uuid)
 		if !file_keys_struct_exists {
@@ -1398,6 +1398,13 @@ func main() {
 		panic(load_file_err)
 	}
 
-	fmt.Println(after_revoke_file)
+	_ = after_revoke_file
+
+	charles_revoke_file, load_file_err := charles.LoadFile("charles_file.txt")
+	if load_file_err != nil {
+		fmt.Println("charles_panic", load_file_err)
+	}
+
+	fmt.Println(charles_revoke_file)
 
 }

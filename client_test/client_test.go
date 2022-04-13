@@ -260,7 +260,7 @@ var _ = Describe("Client Tests", func() {
 			alice, err = client.InitUser("", defaultPassword)
 			Expect(err).ToNot(BeNil())
 		})
-		Specify("Custom Test: Testing Sharing a shared file.", func() {
+		Specify("Custom Test: Owner sharing to two users.", func() {
 			userlib.DebugMsg("Initializing users Alice, Bob, and Charlie.")
 			alice, err = client.InitUser("alice", defaultPassword)
 			Expect(err).To(BeNil())
@@ -271,20 +271,59 @@ var _ = Describe("Client Tests", func() {
 			charles, err = client.InitUser("charles", defaultPassword)
 			Expect(err).To(BeNil())
 
+			userlib.DebugMsg("Alice storing file %s with content: %s", aliceFile, contentOne)
+			alice.StoreFile(aliceFile, []byte(contentOne))
+
+			userlib.DebugMsg("aliceLaptop creating invite for Bob.")
+			bob_invite, err := aliceLaptop.CreateInvitation(aliceFile, "bob")
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Bob accepting invite from Alice under filename %s.", bobFile)
+			err = bob.AcceptInvitation("alice", bob_invite, bobFile)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("aliceLaptop creating invite for Charles.")
+			charles_invite, err := aliceLaptop.CreateInvitation(aliceFile, "charles")
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Charles accepting invite from Alice under filenale %s.", charlesFile)
+			err = charles.AcceptInvitation("bob", charles_invite, charlesFile)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Alice revoking Bob's access from %s.", aliceFile)
+			err = alice.RevokeAccess(aliceFile, "bob")
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Checking that Alice can still load the file.")
+			data, err := alice.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+
+			userlib.DebugMsg("Checking that Bob lost access to the file.")
+			_, err = bob.LoadFile(bobFile)
+			Expect(err).ToNot(BeNil())
+
+			userlib.DebugMsg("Checking that Charles can still load the file.")
+			_, err = charles.LoadFile(charlesFile)
+			Expect(err).To(BeNil())
 		})
 
-		// Specify("Basic Test: Two sessions updating same file.", func() {
+		// Specify("Custom Test: Two sessions updating same file.", func() {
 		// 	userlib.DebugMsg("Initializing user Alice")
 		// 	alice, err = client.InitUser("alice", defaultPassword)
 		// 	Expect(err).To(BeNil())
 
-		// 	aliceLaptop, err = client.GetUser("Alice", defaultPassword)
+		// 	aliceLaptop, err = client.GetUser("alice", defaultPassword)
 		// 	Expect(err).To(BeNil())
 
-		// 	alice.StoreFile("trash_file", []byte(contentOne)
+		// 	alice.StoreFile("trash_file", []byte(contentOne))
 		// 	alice.AppendToFile("trash_file", []byte("weaverweaverweaver"))
-		// 	alice_data = alice.LoadFile("trash_file")
-		// 	aliceLaptop_data = aliceLaptop.LoadFile("trash_file")
+		// 	alice_data, err := alice.LoadFile("trash_file")
+		// 	Expect(err).To(BeNil())
+		// 	aliceLaptop_data, err := aliceLaptop.LoadFile("trash_file")
+		// 	Expect(err).To(BeNil())
+		// 	Expect(alice_data).To(Equal([]byte("Bitcoin is Nick's favorite weaverweaverweaver")))
+		// 	Expect(aliceLaptop_data).To(Equal([]byte("Bitcoin is Nick's favorite weaverweaverweaver")))
 
 		// })
 
