@@ -118,12 +118,13 @@ type Page struct {
 
 // Invitation structure used to access files the user does not own. Stored in datastore, encrypted with RSA.
 type Invitation struct {
-	FileUUID           uuid.UUID
-	Sender             string // Username of sender
-	Recipient          string
-	SE_Key_File_Keys   []byte
-	HMAC_Key_File_Keys []byte
-	FileKeysUUID       uuid.UUID
+	FileUUID         uuid.UUID
+	Owner            string
+	Sender           string // Username of sender
+	Recipient        string
+	SE_Key_File_Keys []byte
+	//HMAC_Key_File_Keys []byte
+	FileKeysUUID uuid.UUID
 }
 
 // File keys the invitation points to. Changed when a user is revoked from sharing permissions.
@@ -907,25 +908,35 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		se_key_file_keys := userlib.RandomBytes(16)
 		encrypted_file_keys := userlib.SymEnc(se_key_file_keys, userlib.RandomBytes(16), file_keys_marshaled)
 
+		// Since the user OWNS the file, user will sign the filekeys with their DS_private, append to the end of File_Keys
+		ds_signature_file_keys, signature_err := userlib.DSSign(userdata.DS_Private, encrypted_file_keys)
+		if signature_err != nil {
+			return null_uuid, fmt.Errorf("Error creating digital signature: %v", signature_err)
+		}
+
+		// Append digital signature behind FileKeys
+		encrypted_file_keys_signed := append(encrypted_file_keys, ds_signature_file_keys...)
+
 		//Generate HMAC tag for file keys
-		hmac_key_file_keys := userlib.RandomBytes(16)
-		hmac_tag_file_keys, hmac_error := userlib.HMACEval(hmac_key_file_keys, encrypted_file_keys)
-		_ = hmac_error
+		// hmac_key_file_keys := userlib.RandomBytes(16)
+		// hmac_tag_file_keys, hmac_error := userlib.HMACEval(hmac_key_file_keys, encrypted_file_keys)
+		// _ = hmac_error
 
 		// Append hmac_tag_file_keys behind file_keys
-		encrypted_file_keys_tagged := append(encrypted_file_keys, hmac_tag_file_keys...)
+		// encrypted_file_keys_tagged := append(encrypted_file_keys, hmac_tag_file_keys...)
 
 		//Store file keys in datastore
-		userlib.DatastoreSet(file_keys_uuid, encrypted_file_keys_tagged)
+		userlib.DatastoreSet(file_keys_uuid, encrypted_file_keys_signed)
 
 		// Create actual invitation struct to be sent
 		invitation_to_send = Invitation{
-			FileUUID:           attempted_file_uuid,
-			Sender:             userdata.Username,
-			Recipient:          recipientUsername,
-			SE_Key_File_Keys:   se_key_file_keys,
-			HMAC_Key_File_Keys: hmac_key_file_keys,
-			FileKeysUUID:       file_keys_uuid,
+			FileUUID:         attempted_file_uuid,
+			Owner:            userdata.Username,
+			Sender:           userdata.Username,
+			Recipient:        recipientUsername,
+			SE_Key_File_Keys: se_key_file_keys,
+			//HMAC_Key_File_Keys: hmac_key_file_keys,
+			FileKeysUUID: file_keys_uuid,
 		}
 
 	} else { // If the user doesn't own the file they want to share
@@ -949,12 +960,13 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 
 		// Create derived invitation from information in recieved information
 		invitation_to_send = Invitation{
-			FileUUID:           recieved_invitation.FileUUID,
-			Sender:             userdata.Username,
-			Recipient:          recipientUsername,
-			SE_Key_File_Keys:   recieved_invitation.SE_Key_File_Keys,
-			HMAC_Key_File_Keys: recieved_invitation.HMAC_Key_File_Keys,
-			FileKeysUUID:       recieved_invitation.FileKeysUUID,
+			FileUUID:         recieved_invitation.FileUUID,
+			Owner:            recieved_invitation.Owner,
+			Sender:           userdata.Username,
+			Recipient:        recipientUsername,
+			SE_Key_File_Keys: recieved_invitation.SE_Key_File_Keys,
+			//HMAC_Key_File_Keys: recieved_invitation.HMAC_Key_File_Keys,
+			FileKeysUUID: recieved_invitation.FileKeysUUID,
 		}
 	}
 
@@ -1089,7 +1101,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 
 	//Check if file is owned by the user. If not we can't revoke
 	val, ok := userdata.Files_owned[filename]
-	if !ok{
+	if !ok {
 		return fmt.Errorf("The given filename does not exist in the caller’s personal file namespace.")
 	}
 	//Get the file_uuid of file
@@ -1100,26 +1112,26 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 	}
 	//Retrieve list of invitations sent out from this file
 	list_val, ok := userdata.Invitation_list[attempted_file_uuid]
-	if !ok{
+	if !ok {
 		return fmt.Errorf("File is not shared with anyone")
 	}
 	var recipient_shared bool = false
-	for _, element := range list_val{
+	for _, element := range list_val {
 		// element is the element from someSlice for where we are
 		unpacked_invitation = UnpackInvitation(element, userdata.username)
-		if unpacked_invitation.recipient == recipientUsername{
+		if unpacked_invitation.recipient == recipientUsername {
 			recipient_shared = true
 		}
 	}
-	if recipient_shared == false{
+	if recipient_shared == false {
 		return fmt.Errorf("File is not shared with the recipient")
 	}
 
-	for _, element := range list_val{
+	for _, element := range list_val {
 		// element is the element from someSlice for where we are
 		unpacked_invitation = UnpackInvitation(element, userdata.username)
-		if unpacked_invitation.recipient != recipientUsername{
-			userdata.createinvitation(filename, unpacked_invitation.recipient)
+		if unpacked_invitation.recipient != recipientUsername {
+			userdata.Createinvitation(filename, unpacked_invitation.recipient)
 		}
 	}
 	update_user_error := UpdateUserDataInDatastore(userdata.Username, userdata.Password, userdata)
