@@ -244,4 +244,48 @@ var _ = Describe("Client Tests", func() {
 		})
 
 	})
+	Describe("Additional Custom Tests", func() {
+
+		Specify("Custom Test: Already existing username", func() {
+			userlib.DebugMsg("Initializing users Alice")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Try initializiing another Alice")
+			bob, err = client.InitUser("alice", defaultPassword)
+			Expect(err).ToNot(BeNil())
+		})
+		Specify("Custom Test: Testing Sharing a shared file.", func() {
+			userlib.DebugMsg("Initializing users Alice, Bob, and Charlie.")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+
+			charles, err = client.InitUser("charles", defaultPassword)
+			Expect(err).To(BeNil())
+
+		})
+
+		// Specify("Basic Test: Two sessions updating same file.", func() {
+		// 	userlib.DebugMsg("Initializing user Alice")
+		// 	alice, err = client.InitUser("alice", defaultPassword)
+		// 	Expect(err).To(BeNil())
+
+		// 	aliceLaptop, err = client.GetUser("Alice", defaultPassword)
+		// 	Expect(err).To(BeNil())
+
+		// 	alice.StoreFile("trash_file", []byte(contentOne)
+		// 	alice.AppendToFile("trash_file", []byte("weaverweaverweaver"))
+		// Ex
+
+		// })
+
+	})
 })
+
+// Possible tests:
+// 1.) Alice ---> Bob ---> Dave (sharing a shared file)
+// 2.) Two session, one modifies a file, see if changes updated
+// 3.)
